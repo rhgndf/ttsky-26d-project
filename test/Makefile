@@ -6,15 +6,18 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = rv32i_core.v qspi_psram.v uart.v timer.v serial.v tt_um_rhgndf_rv32i_soc.v
 
-# Firmware image loaded into the PSRAM model; HEX paths are relative to test/
+SERV_SOURCES = serv/serv_bufreg.v serv/serv_bufreg2.v serv/serv_alu.v \
+  serv/serv_csr.v serv/serv_ctrl.v serv/serv_decode.v serv/serv_immdec.v \
+  serv/serv_mem_if.v serv/serv_rf_if.v serv/serv_rf_ram_if.v \
+  serv/serv_rf_ram.v serv/serv_state.v serv/serv_debug.v \
+  serv/serv_aligner.v serv/serv_compdec.v serv/serv_top.v
+PROJECT_SOURCES = $(SERV_SOURCES) qspi_ctrl.v rf_adapter.v gpio.v \
+  tt_um_rhgndf_rv32i_soc.v
+
+# Firmware image loaded into the flash model; HEX paths relative to test/
 HEX ?= fw/hello.hex
 PLUSARGS += +HEX=$(HEX)
-# SPI loopback (MOSI->MISO) opt-in: make SPI_LOOP=1
-ifdef SPI_LOOP
-PLUSARGS += +SPI_LOOP=1
-endif
 
 ifneq ($(GATES),yes)
 
@@ -43,7 +46,7 @@ endif
 COMPILE_ARGS 		+= -I$(SRC_DIR)
 
 # Include the testbench sources:
-VERILOG_SOURCES += $(PWD)/tb.v $(PWD)/psram_model.v $(PWD)/i2c_slave_model.v
+VERILOG_SOURCES += $(PWD)/tb.v $(PWD)/flash_model.v $(PWD)/psram_model.v
 TOPLEVEL = tb
 
 # List test modules to run, separated by commas and without the .py suffix:

@@ -1,0 +1,57 @@
+CAPI=2:
+
+name : rhgndf:tt:rv32i_soc:0.1.0
+description: SERV-based RV32I SoC for Tiny Tapeout (1x1 tile)
+
+filesets:
+  rtl:
+    files:
+      - src/serv/serv_bufreg.v
+      - src/serv/serv_bufreg2.v
+      - src/serv/serv_alu.v
+      - src/serv/serv_csr.v
+      - src/serv/serv_ctrl.v
+      - src/serv/serv_decode.v
+      - src/serv/serv_immdec.v
+      - src/serv/serv_mem_if.v
+      - src/serv/serv_rf_if.v
+      - src/serv/serv_rf_ram_if.v
+      - src/serv/serv_rf_ram.v
+      - src/serv/serv_state.v
+      - src/serv/serv_debug.v
+      - src/serv/serv_aligner.v
+      - src/serv/serv_compdec.v
+      - src/serv/serv_top.v
+      - src/qspi_ctrl.v
+      - src/rf_adapter.v
+      - src/gpio.v
+      - src/tt_um_rhgndf_rv32i_soc.v
+    file_type : verilogSource
+  tb:
+    files:
+      - test/tb.v
+      - test/flash_model.v
+      - test/psram_model.v
+    file_type : verilogSource
+
+targets:
+  default:
+    filesets : [rtl]
+    toplevel : tt_um_rhgndf_rv32i_soc
+
+  lint:
+    default_tool : verilator
+    description: Lint the whole SoC
+    filesets : [rtl]
+    tools:
+      verilator:
+        mode : lint-only
+        verilator_options:
+          - "-Wall"
+          - "-Wno-fatal"
+    toplevel : tt_um_rhgndf_rv32i_soc
+
+  sim:
+    description: Icarus simulation of tb
+    filesets : [rtl, tb]
+    toplevel : tb

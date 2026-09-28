@@ -1,138 +1,234 @@
 `default_nettype none
-// RV32I SoC top for Tiny Tapeout (1x1 tile) — per docs/architecture.md.
-// Pinout:
-//   ui_in[0] = SPI MISO (GPIO_IN reads all of ui_in)
-//   uo_out   = {GPIO_OUT[3:0], spi_csn, mosi, sck, uart_tx}
-//   uio[0]   = PSRAM CS_n (out), uio[1] = PSRAM SCK (out)
-//   uio[5:2] = PSRAM SD3..0 (bidir; SD0 = uio[2])
-//   uio[6]   = I2C SDA open-drain, uio[7] = I2C SCL open-drain
-// Memory map: addr[29:28]==2'b10 -> peripherals at 0x2000_0000 + block*0x100;
-//             everything else -> PSRAM byte address [23:0].
+// tt_um_rhgndf_rv32i_soc — RV32I SoC for Tiny Tapeout 1x1
+// SERV 1.4.0 (unmodified) + QSPI flash/PSRAM controller + RF-in-PSRAM adapter
+// + GPIO.  Memory map (docs/architecture.md):
+//   adr[31]=1        -> peripherals (GPIO: read=ui_in, write=uo_out)
+//   adr[31]=0, [24]=0 -> flash CS0, adr[23:0], read-only (writes acked+ignored)
+//   adr[31]=0, [24]=1 -> PSRAM CS1, base 0x0100_0000
+// QSPI Pmod: uio[0]=CS0, [1]=SD0, [2]=SD1, [3]=SCK, [4]=SD2, [5]=SD3,
+//            [6]=CS1, [7]=CS2 (unused, driven high).
 module tt_um_rhgndf_rv32i_soc (
-    input  wire [7:0] ui_in,
-    output wire [7:0] uo_out,
-    input  wire [7:0] uio_in,
-    output wire [7:0] uio_out,
-    output wire [7:0] uio_oe,
+    input  wire [7:0] ui_in,    // GPIO_IN (ui_in[0] = SD card MISO later)
+    output wire [7:0] uo_out,   // GPIO_OUT (uo_out[0] = UART TX by software)
+    input  wire [7:0] uio_in,   // QSPI Pmod inputs
+    output wire [7:0] uio_out,  // QSPI Pmod outputs
+    output wire [7:0] uio_oe,   // QSPI Pmod output enables
     input  wire       ena,
     input  wire       clk,
     input  wire       rst_n
 );
 
-    // ---------------- CPU <-> fabric bus
-    wire        mem_valid;
-    wire        mem_ready;
-    wire [31:0] mem_addr;
-    wire [31:0] mem_wdata;
-    wire [3:0]  mem_wstrb;
-    wire [31:0] mem_rdata;
+    // ---------------------------------------------------------------
+    // SERV core (unmodified, tag 1.4.0)
+    // ---------------------------------------------------------------
+    wire        rf_wreq, rf_rreq, rf_ready;
+    wire [4:0]  rf_wreg0, rf_rreg0, rf_rreg1;
+    wire        rf_wen0, rf_wdata0, rf_rdata0, rf_rdata1;
 
-    wire        periph   = (mem_addr[29:28] == 2'b10);
-    wire [3:0]  pblk     = mem_addr[11:8];
-    wire        cpu_wr   = |mem_wstrb;
+    wire        ibus_cyc, ibus_ack;
+    wire [31:0] ibus_adr, ibus_rdt;
+    wire        dbus_cyc, dbus_we, dbus_ack;
+    wire [31:0] dbus_adr, dbus_dat, dbus_rdt;
+    wire [3:0]  dbus_sel;
 
-    // ---------------- PSRAM channel
-    wire        psram_ready;
-    wire [31:0] psram_rdata;
-    wire        psram_sck, psram_csn;
-    wire [3:0]  psram_sd_out, psram_sd_oe;
+    /* verilator lint_off PINCONNECTEMPTY */
+    serv_top #(
+        .RESET_PC       (32'h0000_0000),
+        .RESET_STRATEGY ("MINI"),
+        .WITH_CSR       (0),
+        .PRE_REGISTER   (1),
+        .MDU            (0),
+        .COMPRESSED     (0),
+        .ALIGN          (0),
+        .W              (1)
+    ) cpu (
+        .clk          (clk),
+        .i_rst        (!rst_n),
+        .i_timer_irq  (1'b0),
 
-    qspi_psram u_psram (
-        .clk(clk), .rst_n(rst_n),
-        .req(mem_valid && !periph),
-        .wr(cpu_wr),
-        .addr(mem_addr[23:0]),
-        .wdata(mem_wdata),
-        .ready(psram_ready),
-        .rdata(psram_rdata),
-        .sck(psram_sck), .cs_n(psram_csn),
-        .sd_out(psram_sd_out), .sd_oe(psram_sd_oe),
-        .sd_in(uio_in[5:2])
+        .o_rf_rreq    (rf_rreq),
+        .o_rf_wreq    (rf_wreq),
+        .i_rf_ready   (rf_ready),
+        .o_wreg0      (rf_wreg0),
+        .o_wreg1      (),
+        .o_wen0       (rf_wen0),
+        .o_wen1       (),
+        .o_wdata0     (rf_wdata0),
+        .o_wdata1     (),
+        .o_rreg0      (rf_rreg0),
+        .o_rreg1      (rf_rreg1),
+        .i_rdata0     (rf_rdata0),
+        .i_rdata1     (rf_rdata1),
+
+        .o_ibus_adr   (ibus_adr),
+        .o_ibus_cyc   (ibus_cyc),
+        .i_ibus_rdt   (ibus_rdt),
+        .i_ibus_ack   (ibus_ack),
+
+        .o_dbus_adr   (dbus_adr),
+        .o_dbus_dat   (dbus_dat),
+        .o_dbus_sel   (dbus_sel),
+        .o_dbus_we    (dbus_we),
+        .o_dbus_cyc   (dbus_cyc),
+        .i_dbus_rdt   (dbus_rdt),
+        .i_dbus_ack   (dbus_ack),
+
+        .o_ext_funct3 (),
+        .i_ext_ready  (1'b0),
+        .i_ext_rd     (32'b0),
+        .o_ext_rs1    (),
+        .o_ext_rs2    (),
+        .o_mdu_valid  ()
     );
+    /* verilator lint_on PINCONNECTEMPTY */
 
-    // ---------------- peripherals
-    // Block 0: GPIO (0x00 OUT[3:0] -> uo_out[7:4]; 0x04 IN = ui_in)
-    reg [3:0] gpio_out;
-    wire      gpio_req = mem_valid && periph && pblk == 4'h0;
-    reg [31:0] gpio_rdata;
-    always @(*) begin
-        case (mem_addr[3:2])
-        2'd1:    gpio_rdata = {24'b0, ui_in};
-        default: gpio_rdata = {28'b0, gpio_out};
-        endcase
-    end
+    // ---------------------------------------------------------------
+    // QSPI engine + arbitration
+    //   clients: RF adapter (highest) > dbus > ibus
+    //   adr[31] (peripheral) ops never reach the engine — acked in-place.
+    // ---------------------------------------------------------------
+    wire        op_done;
+    wire [31:0] op_rdata;
+
+    // RF adapter request
+    wire        rf_op_req, rf_op_we;
+    wire [23:0] rf_op_addr;
+    wire [31:0] rf_op_wdata;
+
+    // bus decodes
+    wire i_periph = ibus_adr[31];
+    wire d_periph = dbus_adr[31];
+    wire i_req = ibus_cyc & ~i_periph;
+    wire d_req = dbus_cyc & ~d_periph;
+
+    // dbus write byte lane decode: start = lowest set sel bit, len = popcount
+    wire [1:0] d_wofs = dbus_sel[0] ? 2'd0 :
+                        dbus_sel[1] ? 2'd1 :
+                        dbus_sel[2] ? 2'd2 : 2'd3;
+    wire [2:0] d_wlen = (dbus_sel == 4'b1111) ? 3'd4 :
+                        ((dbus_sel == 4'b0011) || (dbus_sel == 4'b0110) ||
+                         (dbus_sel == 4'b1100)) ? 3'd2 : 3'd1;
+
+    // flash-region writes are acked+ignored: they never reach the engine
+    wire       d_flash_wr = d_req && dbus_we && !dbus_adr[24];
+    wire       d_eng      = d_req && !d_flash_wr;
+
+    // engine client mux (RF pending first, then dbus, then ibus)
+    wire [1:0] client = rf_op_req ? 2'd0 : (d_eng ? 2'd1 : 2'd2);
+    wire       op_req   = rf_op_req | d_eng | i_req;
+    wire       op_we    = (client == 2'd0) ? rf_op_we :
+                          (client == 2'd1) ? dbus_we : 1'b0;
+    wire       op_cs    = (client == 2'd0) ? 1'b1 :
+                          (client == 2'd1) ? dbus_adr[24] : ibus_adr[24];
+    wire [23:0] op_addr = (client == 2'd0) ? rf_op_addr :
+                          (client == 2'd1) ? dbus_adr[23:0] : ibus_adr[23:0];
+    wire [31:0] op_wdata = (client == 2'd0) ? rf_op_wdata : dbus_dat;
+    wire [1:0]  op_wofs = (client == 2'd0) ? 2'd0 : d_wofs;
+    wire [2:0]  op_wlen = (client == 2'd0) ? 3'd4 : d_wlen; // RF ops always 4B
+
+    reg  [1:0]  client_r;  // client owning the in-flight txn
+    wire        engine_idle;
     always @(posedge clk) begin
-        if (!rst_n) gpio_out <= 4'b0;
-        else if (gpio_req && cpu_wr && mem_addr[3:2] == 2'd0)
-            gpio_out <= mem_wdata[3:0];
+        if (!rst_n) client_r <= 2'd2;
+        else if (op_req && engine_idle) client_r <= client;
     end
 
-    // Block 1: UART TX
-    wire        uart_req = mem_valid && periph && pblk == 4'h1;
-    wire [31:0] uart_rdata;
-    wire        uart_tx;
-    uart u_uart (
-        .clk(clk), .rst_n(rst_n),
-        .req(uart_req), .regsel(mem_addr[3:2]), .wr(cpu_wr),
-        .wdata(mem_wdata), .rdata(uart_rdata), .tx(uart_tx)
+    wire [3:0] sd_out, sd_oe, sd_in;
+    wire       cs0_n, cs1_n, sck;
+
+    qspi_ctrl qspi (
+        .clk      (clk),
+        .rst_n    (rst_n),
+        .op_req   (op_req),
+        .op_we    (op_we),
+        .op_cs    (op_cs),
+        .op_addr  (op_addr),
+        .op_wdata (op_wdata),
+        .op_wofs  (op_wofs),
+        .op_wlen  (op_wlen),
+        .op_rdata (op_rdata),
+        .op_done  (op_done),
+        .op_ready (engine_idle),
+        .cs0_n    (cs0_n),
+        .cs1_n    (cs1_n),
+        .sck      (sck),
+        .sd_out   (sd_out),
+        .sd_oe    (sd_oe),
+        .sd_in    (sd_in)
     );
 
-    // Block 2: TIMER
-    wire        timer_req = mem_valid && periph && pblk == 4'h2;
-    wire [31:0] timer_rdata;
-    wire        irq_timer;
-    timer u_timer (
-        .clk(clk), .rst_n(rst_n),
-        .req(timer_req), .regsel(mem_addr[4:2]), .wr(cpu_wr),
-        .wdata(mem_wdata), .rdata(timer_rdata), .irq(irq_timer)
+
+    // ---------------------------------------------------------------
+    // RF adapter (register file in PSRAM)
+    // ---------------------------------------------------------------
+    rf_adapter rfa (
+        .clk      (clk),
+        .rst_n    (rst_n),
+        .i_wreq   (rf_wreq),
+        .i_rreq   (rf_rreq),
+        .o_ready  (rf_ready),
+        .i_rreg0  (rf_rreg0),
+        .i_rreg1  (rf_rreg1),
+        .o_rdata0 (rf_rdata0),
+        .o_rdata1 (rf_rdata1),
+        .i_wen0   (rf_wen0),
+        .i_wreg0  (rf_wreg0),
+        .i_wdata0 (rf_wdata0),
+        .op_req   (rf_op_req),
+        .op_we    (rf_op_we),
+        .op_addr  (rf_op_addr),
+        .op_wdata (rf_op_wdata),
+        .op_rdata (op_rdata),
+        .op_done  (op_done && client_r == 2'd0),
+        .op_grant (engine_idle)
     );
 
-    // Blocks 3+4: shared SPI/I2C serial engine
-    wire        spi_req  = mem_valid && periph && pblk == 4'h3;
-    wire        i2c_req  = mem_valid && periph && pblk == 4'h4;
-    wire [31:0] spi_rdata, i2c_rdata;
-    wire        spi_sck, spi_mosi, spi_csn;
-    wire        i2c_sda_oe, i2c_scl_oe;
-    serial u_serial (
-        .clk(clk), .rst_n(rst_n),
-        .spi_req(spi_req), .spi_regsel(mem_addr[3:2]), .spi_wr(cpu_wr),
-        .wdata(mem_wdata), .spi_rdata(spi_rdata),
-        .i2c_req(i2c_req), .i2c_regsel(mem_addr[3:2]), .i2c_wr(cpu_wr),
-        .i2c_rdata(i2c_rdata),
-        .spi_sck(spi_sck), .spi_mosi(spi_mosi), .spi_miso(ui_in[0]),
-        .spi_csn(spi_csn),
-        .i2c_sda_oe(i2c_sda_oe), .i2c_scl_oe(i2c_scl_oe),
-        .sda_in(uio_in[6]), .scl_in(uio_in[7])
+    // ---------------------------------------------------------------
+    // GPIO peripheral
+    // ---------------------------------------------------------------
+    wire       gpio_we = d_periph && dbus_cyc && dbus_we;
+    wire [7:0] gpio_out;
+    gpio gpio_i (
+        .clk      (clk),
+        .rst_n    (rst_n),
+        .we       (gpio_we),
+        .wdata    (dbus_dat[7:0]),
+        .gpio_out (gpio_out)
     );
 
-    // ---------------- peripheral read mux / ready
-    wire [31:0] periph_rdata = (pblk == 4'h1) ? uart_rdata  :
-                               (pblk == 4'h2) ? timer_rdata :
-                               (pblk == 4'h3) ? spi_rdata   :
-                               (pblk == 4'h4) ? i2c_rdata   :
-                                                gpio_rdata; // 0 and unmapped
-    assign mem_ready = periph ? mem_valid : psram_ready;
-    // rdata source must follow the served transaction, not the live address:
-    // the core streams rdata nibbles after mem_addr has moved on.
-    reg rd_periph;
-    always @(posedge clk) if (mem_valid) rd_periph <= periph;
-    assign mem_rdata = rd_periph ? periph_rdata : psram_rdata;
+    // ---------------------------------------------------------------
+    // bus returns
+    //   peripheral: immediate ack, rdata = GPIO in
+    //   memory:     ack on engine done; flash writes ignored (acked silently)
+    // ---------------------------------------------------------------
+    assign ibus_ack = i_periph ? ibus_cyc :
+                      (op_done && client_r == 2'd2);
+    assign ibus_rdt = i_periph ? {24'b0, ui_in} : op_rdata;
 
-    // ---------------- core (external interrupt: none wired)
-    rv32i_core u_core (
-        .clk(clk), .rst_n(rst_n),
-        .mem_valid(mem_valid), .mem_ready(mem_ready),
-        .mem_addr(mem_addr), .mem_wdata(mem_wdata), .mem_wstrb(mem_wstrb),
-        .mem_rdata(mem_rdata),
-        .irq_timer(irq_timer), .irq_ext(1'b0)
-    );
+    // Non-engine acks must be a single-cycle pulse: a level ack held over
+    // multiple cycles makes SERV treat the store as repeatedly completing
+    // and corrupts its serial pc/datapath state.
+    reg ack_seen;
+    always @(posedge clk) ack_seen <= dbus_cyc && dbus_ack;
+    wire fast_ack = dbus_cyc && !ack_seen;
 
-    // ---------------- pinout
-    assign uo_out  = {gpio_out, spi_csn, spi_mosi, spi_sck, uart_tx};
-    assign uio_out = {1'b0, 1'b0, psram_sd_out, psram_sck, psram_csn};
-    assign uio_oe  = {i2c_scl_oe, i2c_sda_oe, psram_sd_oe, 1'b1, 1'b1};
+    assign dbus_ack = d_periph   ? fast_ack :
+                      d_flash_wr ? fast_ack :   // flash write: ack + drop
+                      (op_done && client_r == 2'd1);
+    assign dbus_rdt = d_periph ? {24'b0, ui_in} : op_rdata;
 
-    wire _unused = &{1'b0, ena, ui_in[7:1], uio_in[1:0], uio_in[7:6], mem_addr[31:30], mem_addr[27:12],
-                     mem_addr[1:0], 1'b0};
+    // ---------------------------------------------------------------
+    // pads: uio[0]=CS0 [1]=SD0 [2]=SD1 [3]=SCK [4]=SD2 [5]=SD3 [6]=CS1 [7]=CS2
+    // ---------------------------------------------------------------
+    assign uio_out = {1'b1, cs1_n, sd_out[3], sd_out[2],
+                      sck, sd_out[1], sd_out[0], cs0_n};
+    assign uio_oe  = {1'b1, 1'b1, sd_oe[3], sd_oe[2],
+                      1'b1, sd_oe[1], sd_oe[0], 1'b1};
+    assign sd_in   = {uio_in[5], uio_in[4], uio_in[2], uio_in[1]};
+    assign uo_out  = gpio_out;
+
+    wire _unused = &{1'b0, ena, uio_in[7:6], uio_in[3], uio_in[0],
+                     dbus_adr[30:25], ibus_adr[30:25], 1'b0};
 
 endmodule
+`default_nettype wire

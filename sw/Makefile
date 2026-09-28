@@ -8,7 +8,7 @@ COMMON  = common/crt0.S common/print.c
 
 OUT = ../test/fw
 
-PROGS = hello memtest traptest
+PROGS = hello memtest rftest
 # riscv-tests vendored from riscv-software-src/riscv-tests @ bcffa2b3
 # (isa/rv32ui/*.S incl. ../rv64ui bodies, isa/macros/scalar/test_macros.h)
 RVTESTS = $(patsubst %.S,rv32ui-p-%,$(notdir $(wildcard riscv-tests/rv32ui/*.S)))

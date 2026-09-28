@@ -4,38 +4,81 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer, ClockCycles, with_timeout
 
 CLK_NS = 20            # 50 MHz
-UART_DIV = 16          # firmware sets DIV=16
 GATES = os.getenv("GATES") == "yes"
 
 # which firmware image this sim run loaded (via +HEX=... plusarg)
 HEX = cocotb.plusargs.get("HEX", "")
 
 
-async def uart_rx(dut, chars, timeout_clks=5_000_000):
-    """Decode UART bytes on uo_out[0] (DIV=16 clks/bit) until timeout."""
+async def uart_rx(dut, chars, timeout_ns=60_000_000):
+    """Record uo_out[0] edges; decode frames afterwards. Bit width is the
+    minimum observed pulse width (a 'start bit' may merge with leading zero
+    data bits, so it cannot be measured from a single pulse)."""
     tx = dut.uo_out
-    bit = UART_DIV * CLK_NS
-    got = bytearray()
-    nclks = 0
-    while True:
-        while tx.value[0] == 1:
-            await RisingEdge(dut.clk)
-            nclks += 1
-            if nclks > timeout_clks:
-                return got
-        await Timer(bit // 2 + 2, unit="ns")   # mid start bit, skewed off clk edges
+    edges = chars  # reuse the list: [(t_ns, level), ...]
+    t = 0
+    prev = 0
+    armed = False  # ignore edges until the line has gone idle-high once
+    while t < timeout_ns:
+        await Timer(200, unit="ns")
+        t += 200
+        try:
+            v = int(tx.value[0])
+        except ValueError:
+            v = prev
+        if not armed:
+            if v == 1:
+                armed = True
+            prev = v
+            continue
+        if v != prev:
+            edges.append((t, v))
+            prev = v
+
+
+def uart_decode(edges):
+    """Decode 8N1 frames from a (time, level) edge list."""
+    if not edges:
+        return b""
+    widths = sorted({b - a for (a, _), (b, _) in zip(edges, edges[1:]) if b - a >= 400})
+    if not widths:
+        return b""
+    n = len(edges)
+
+    def level_at(time):
+        lvl = 1
+        for (te, le) in edges:
+            if te <= time:
+                lvl = le
+            else:
+                break
+        return lvl
+
+    bit = widths[0]
+    out = bytearray()
+    i = 0
+    while i < n:
+        # a falling edge after idle = start bit
+        t0, v = edges[i]
+        if v != 0:
+            i += 1
+            continue
         byte = 0
-        for i in range(8):
-            await Timer(bit, unit="ns")
-            byte |= (1 if tx.value[0] == 1 else 0) << i
-        got.append(byte)
-        chars.append(byte)
-        await Timer(bit, unit="ns")
+        for b in range(8):
+            if level_at(t0 + int(bit * (b + 1.5))):
+                byte |= 1 << b
+        if level_at(t0 + int(bit * 9.5)) == 1:  # stop bit
+            out.append(byte)
+        # skip edges inside this frame (~10 bit cells)
+        t_end = t0 + int(bit * 10)
+        while i < n and edges[i][0] < t_end:
+            i += 1
+    return bytes(out)
 
 
 async def reset(dut):
     dut.ena.value = 1
-    dut.ui_in.value = 0xFF   # UART RX idle high
+    dut.ui_in.value = 0x00   # GPIO in
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 20)
     dut.rst_n.value = 1
@@ -50,17 +93,21 @@ async def wait_tohost(dut, timeout_ns=200_000_000):
 
 
 async def run_program(dut, name, expect_uart=b"", timeout_ns=200_000_000):
-    chars = []
-    rx = cocotb.start_soon(uart_rx(dut, chars))
+    edges = []
+    rx = cocotb.start_soon(uart_rx(dut, edges))
     await reset(dut)
     val = await wait_tohost(dut, timeout_ns)
     rx.kill()
-    assert val is not None, f"{name}: no tohost write (uart={bytes(chars)!r})"
+    if os.getenv("UART_DEBUG"):
+        print("EDGES", edges)
+    chars = uart_decode(edges)
+    assert val is not None, f"{name}: no tohost write (uart={chars!r})"
     assert int(dut.psram_error.value) == 0, f"{name}: PSRAM protocol error"
-    assert val == 1, f"{name}: tohost={val:#x} (uart={bytes(chars)!r})"
+    assert int(dut.flash_error.value) == 0, f"{name}: flash protocol error"
+    assert val == 1, f"{name}: tohost={val:#x} (uart={chars!r})"
     if expect_uart:
-        assert expect_uart in bytes(chars), \
-            f"{name}: expected {expect_uart!r} in uart output {bytes(chars)!r}"
+        assert expect_uart in chars, \
+            f"{name}: expected {expect_uart!r} in uart output {chars!r}"
 
 
 @cocotb.test(skip=GATES or "hello" not in HEX)
@@ -75,10 +122,10 @@ async def test_memtest(dut):
     await run_program(dut, "memtest", expect_uart=b"memtest done\n")
 
 
-@cocotb.test(skip=GATES or "traptest" not in HEX)
-async def test_traptest(dut):
+@cocotb.test(skip=GATES or "rftest" not in HEX)
+async def test_rftest(dut):
     cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
-    await run_program(dut, "traptest", expect_uart=b"traptest done\n")
+    await run_program(dut, "rftest", expect_uart=b"rftest done\n")
 
 
 @cocotb.test(skip=GATES or "rv32ui" not in HEX)

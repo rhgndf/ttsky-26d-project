@@ -1,11 +1,11 @@
 `default_nettype none
 `timescale 1ns / 1ps
 
-/* Testbench: tt_um_rhgndf_rv32i_soc + QSPI PSRAM model (256 KB).
-   Firmware image: +HEX=<path> plusarg ($readmemh, byte-wide verilog hex).
-   +SPI_LOOP=1: loop SPI MOSI (uo_out[2]) back into MISO (ui_in[0]).
-   I2C slave model at addr 0x50 (EEPROM-like pointer) on uio[7:6].
-   Exposes tohost_flag/tohost_val and psram error to cocotb. */
+/* Testbench: tt_um_rhgndf_rv32i_soc (SERV) + shared QSPI bus:
+   uio[0]=CS0 flash (W25Q128 model, +HEX firmware), uio[6]=CS1 PSRAM (128KB),
+   uio[1,2,4,5]=SD0-3, uio[3]=SCK, uio[7]=CS2 (must stay high).
+   Asserts: CS0 & CS1 never low together; CS2 always high.
+   Exposes tohost_flag/tohost_val and model errors to cocotb. */
 module tb ();
 
   initial begin
@@ -27,11 +27,6 @@ module tb ();
   wire VGND = 1'b0;
 `endif
 
-  integer spi_loop;
-  initial begin
-    if (!$value$plusargs("SPI_LOOP=%d", spi_loop)) spi_loop = 0;
-  end
-
   tt_um_rhgndf_rv32i_soc user_project (
 `ifdef GL_TEST
       .VPWR(VPWR),
@@ -47,54 +42,75 @@ module tb ();
       .rst_n  (rst_n)
   );
 
-  // ---- PSRAM bus: uio[5:2] resolved between DUT and model
-  wire [3:0] host_sd_oe  = uio_oe[5:2];
-  wire [3:0] host_sd_out = uio_out[5:2];
-  wire [3:0] mdl_drv, mdl_oe;
+  // ---- Shared SD bus: pins {5,4,2,1} = SD3,SD2,SD1,SD0
+  wire [3:0] host_sd_oe  = {uio_oe[5],  uio_oe[4],  uio_oe[2],  uio_oe[1]};
+  wire [3:0] host_sd_out = {uio_out[5], uio_out[4], uio_out[2], uio_out[1]};
+  wire [3:0] sd_pins     = {uio_in[5],  uio_in[4],  uio_in[2],  uio_in[1]};
+
+  wire [3:0] fl_drv, fl_oe, rm_drv, rm_oe;
+  wire       cs0 = uio_out[0], cs1 = uio_out[6], sck = uio_out[3];
+
   genvar i;
   generate
     for (i = 0; i < 4; i = i + 1) begin : sd_res
-      assign uio_in[2+i] = host_sd_oe[i] ? host_sd_out[i] :
-                           mdl_oe[i]     ? mdl_drv[i]     : 1'bz;
+      // SD bus bit i -> pin map: bit0=uio[1], bit1=uio[2], bit2=uio[4], bit3=uio[5]
+      wire drv = host_sd_oe[i] ? host_sd_out[i] :
+                 fl_oe[i]      ? fl_drv[i]      :
+                 rm_oe[i]      ? rm_drv[i]      : 1'bz;
     end
   endgenerate
-  assign uio_in[1:0] = uio_out[1:0]; // SCK, CS_n loop back (unused by DUT)
+  assign uio_in[1] = sd_res[0].drv;
+  assign uio_in[2] = sd_res[1].drv;
+  assign uio_in[4] = sd_res[2].drv;
+  assign uio_in[5] = sd_res[3].drv;
+  assign uio_in[0] = cs0;
+  assign uio_in[3] = sck;
+  assign uio_in[6] = cs1;
+  assign uio_in[7] = uio_out[7];  // CS2 loop back
 
-  // ---- I2C lines: DUT open-drain + slave model open-drain, pulled high
-  wire sda_drv, scl_drv;
-  assign uio_in[7] = uio_oe[7] ? 1'b0 : (scl_drv ? 1'b0 : 1'b1); // SCL
-  assign uio_in[6] = uio_oe[6] ? 1'b0 : (sda_drv ? 1'b0 : 1'b1); // SDA
-
-  wire i2c_error;
-
-  i2c_slave_model u_i2c (
-      .scl (uio_in[7]),
-      .sda (uio_in[6]),
-      .sda_drv (sda_drv),   // drives SDA low when 1 (open drain)
-      .error (i2c_error)
-  );
-  assign scl_drv = 1'b0;   // slave never stretches
-
-  // ---- SPI loopback option: MOSI -> MISO
-  always @(*) begin
-    ui_in = 8'b0;
-    if (spi_loop) ui_in[0] = uo_out[2]; // MOSI -> MISO
-  end
-
-  wire        psram_error;
-  wire        tohost_flag;
+  wire flash_error, psram_error;
+  wire tohost_flag;
   wire [31:0] tohost_val;
 
-  psram_model #(.SIZE(256*1024)) psram (
-      .sck        (uio_out[1]),
-      .cs_n       (uio_out[0]),
-      .sd         (uio_in[5:2]),
+  flash_model #(.SIZE(1024*1024)) flash (
+      .sck    (sck),
+      .cs_n   (cs0),
+      .sd     (sd_pins),
+      .host_oe(host_sd_oe),
+      .sd_drv (fl_drv),
+      .sd_oe  (fl_oe),
+      .error  (flash_error)
+  );
+
+  psram_model #(.SIZE(128*1024)) psram (
+      .sck        (sck),
+      .cs_n       (cs1),
+      .sd         (sd_pins),
       .host_oe    (host_sd_oe),
-      .sd_drv     (mdl_drv),
-      .sd_oe      (mdl_oe),
+      .sd_drv     (rm_drv),
+      .sd_oe      (rm_oe),
       .error      (psram_error),
       .tohost_flag(tohost_flag),
       .tohost_val (tohost_val)
   );
+
+  // ---- bus protocol assertions
+  always @(posedge clk) begin
+    if (rst_n && !cs0 && !cs1)
+      $display("BUS_ERROR: CS0 and CS1 both low (t=%0t)", $time);
+    if (rst_n && !uio_out[7])
+      $display("BUS_ERROR: CS2 low (t=%0t)", $time);
+  end
+
+  // contention: both models driving at once
+  always @(*) begin
+    if ((fl_oe & rm_oe) != 0)
+      $display("BUS_ERROR: flash and psram both driving SD (t=%0t)", $time);
+  end
+
+  // GPIO inputs: idle, spi loopback unused for now
+  always @(*) begin
+    ui_in = 8'b0;
+  end
 
 endmodule
