@@ -53,6 +53,7 @@ FW_HEXS := $(sort $(wildcard fw/*.hex))
 test-progs:
 	@set -e; for h in $(FW_HEXS); do \
 	  echo "=== HEX=$$h ==="; \
+	  rm -f results.xml; \
 	  $(MAKE) HEX=$$h results.xml >/dev/null 2>&1 && \
-	    grep -o 'testsuite.*' results.xml | head -1 || { echo "FAIL $$h"; cat sim_build/rtl/cocotb.log 2>/dev/null | tail -20; exit 1; }; \
+	    grep -q 'failures="0"' results.xml && echo "PASS $$h" || { echo "FAIL $$h"; exit 1; }; \
 	done

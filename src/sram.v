@@ -9,7 +9,7 @@ module sram #(
     input  wire [31:0] wdata,
     input  wire [3:0]  wstrb,  // 0 = read
     output wire        ready,
-    output reg  [31:0] rdata
+    output wire [31:0] rdata
 );
     localparam WORDS = SRAM_BYTES / 4;
     localparam AW    = $clog2(WORDS);
@@ -21,15 +21,14 @@ module sram #(
     wire [AW-1:0] widx = addr[AW+1:2];
     wire _unused = &{1'b0, addr[31:AW+2], addr[1:0], 1'b0};
 
+    assign rdata = mem[widx]; // combinational read: valid the same cycle ready fires
+
     always @(posedge clk) begin
-        if (req) begin
-            if (wstrb != 0) begin
-                if (wstrb[0]) mem[widx][7:0]   <= wdata[7:0];
-                if (wstrb[1]) mem[widx][15:8]  <= wdata[15:8];
-                if (wstrb[2]) mem[widx][23:16] <= wdata[23:16];
-                if (wstrb[3]) mem[widx][31:24] <= wdata[31:24];
-            end
-            rdata <= mem[widx];
+        if (req && wstrb != 0) begin
+            if (wstrb[0]) mem[widx][7:0]   <= wdata[7:0];
+            if (wstrb[1]) mem[widx][15:8]  <= wdata[15:8];
+            if (wstrb[2]) mem[widx][23:16] <= wdata[23:16];
+            if (wstrb[3]) mem[widx][31:24] <= wdata[31:24];
         end
     end
 
