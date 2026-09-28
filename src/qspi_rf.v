@@ -17,7 +17,9 @@
 // and then the 32-cycle stream window. sd_out/sd_oe/cs are combinational on
 // {state, step}; they only change on the clk edge that lowers SCK because
 // step only advances there. sd_in is sampled on the rising edge.
-module qspi_rf (
+module qspi_rf #(
+    parameter POLL_BITS = 20
+) (
     input  wire        clk,
     input  wire        rst_n,
     // SERV RF interface
@@ -43,6 +45,15 @@ module qspi_rf (
     input  wire [31:0] i_dbus_dat,
     input  wire [3:0]  i_dbus_sel,
     output wire        o_dbus_ack,
+    // flash erase/program controller (CS0)
+    input  wire        i_fa_we,     // FLASH_ADDR store (bytes masked by sel)
+    input  wire        i_stat_we,   // FLASH_STATUS store, sel[0] byte
+    output wire [23:0] o_fa,
+    output wire        o_wen,
+    output wire        o_timeout,
+    input  wire        i_fop_req,   // PROG/ERASE store with WEN set
+    input  wire        i_fop_erase,
+    output wire        o_fop_ack,
     // pads (CS0 flash, CS1 PSRAM)
     output wire        cs0_n,
     output wire        cs1_n,
@@ -60,6 +71,10 @@ module qspi_rf (
     localparam S_RD1    = 3'd3;   // read x[i_rreg1] -> B2
     localparam S_MEM    = 3'd4;   // ibus/dbus txn -> B2 / lane data
     localparam S_STREAM = 3'd5;
+    localparam S_FOP    = 3'd6;   // flash erase/program op (CS0)
+    localparam F_WREN   = 2'd0;   // S_FOP sub-stages: WREN / CMD+data / POLL
+    localparam F_CMD    = 2'd1;
+    localparam F_POLL   = 2'd2;
 
     reg  [2:0]  state;
     reg  [31:0] b1, b2;
@@ -71,15 +86,29 @@ module qspi_rf (
     reg         rf_ph;      // 0: next RF txn is RD0, 1: RD1
     reg         dirty;      // B1 holds an uncommitted rd write
     reg         mem_i;      // in-flight MEM txn owns ibus (1) / dbus (0)
+    // flash erase/program controller
+    reg  [23:0] fa;         // FLASH_ADDR / op address (rotates through CMD)
+    reg  [POLL_BITS-1:0] pcnt;
+    reg  [1:0]  fstg;       // F_WREN / F_CMD / F_POLL
+    reg         fdat;       // CMD stage: address done, now quad data
+    reg         ferase;     // in-flight op is erase (else program)
+    reg         fbusy;      // sampled BUSY bit from the last POLL
+    reg         fop;        // a flash op is in progress (across CS gaps)
+    reg         wen;        // STATUS bit1, write-enable
+    reg         timeout;    // STATUS bit0, sticky
 
     // -----------------------------------------------------------------
     // transaction decode (all combinational on stable SERV buses)
     // -----------------------------------------------------------------
     wire in_txn = (state == S_FLUSH) || (state == S_RD0) ||
-                  (state == S_RD1)  || (state == S_MEM);
+                  (state == S_RD1)  || (state == S_MEM) ||
+                  (state == S_FOP);
+    wire fop_st = (state == S_FOP);
     wire is_rd_rf = (state == S_RD0) || (state == S_RD1);
-    wire we   = (state == S_FLUSH) || (state == S_MEM && !mem_i && i_dbus_we);
-    wire cs1  = (state != S_MEM) || (mem_i ? i_ibus_adr[24] : i_dbus_adr[24]);
+    wire we   = (state == S_FLUSH) || (state == S_MEM && !mem_i && i_dbus_we)
+                || (fop_st && fdat);
+    wire cs1  = !fop_st &&
+                ((state != S_MEM) || (mem_i ? i_ibus_adr[24] : i_dbus_adr[24]));
 
     // byte lane decode for sub-word stores
     wire [1:0] wofs = i_dbus_sel[0] ? 2'd0 :
@@ -105,13 +134,23 @@ module qspi_rf (
     wire wr_data =  we && (step >= 5'd14);
     wire [2:0] wlen_eff = (state == S_FLUSH) ? 3'd4 : wlen;
     wire [4:0] last_step = we ? (5'd13 + {1'b0, wlen_eff, 1'b0}) : 5'd27;
-    wire txn_done = in_txn && sck && (step == last_step);
+    wire txn_done = in_txn && !fop_st && sck && (step == last_step);
+
+    // S_FOP phase decode: every stage starts with a serial cmd (steps 0-7);
+    // F_CMD then sends fa serially on SD0 (steps 8-31, rotating fa), a
+    // program jumps back to step 14 for the existing quad write-data path;
+    // F_POLL releases the bus for steps 8-15 (status byte on SD1).
+    wire f_cmd  = fop_st && (step < 5'd8);
+    wire f_addr = fop_st && (fstg == F_CMD) && !fdat && (step >= 5'd8);
+    wire f_data = fop_st && fdat;
+    wire [7:0] fcmd = (fstg == F_WREN) ? 8'h06 :
+                      (fstg == F_CMD)  ? (ferase ? 8'h20 : 8'h32) : 8'h05;
 
     // outputs
     assign cs0_n = !(in_txn && !cs1);
     assign cs1_n = !(in_txn &&  cs1);
 
-    wire [7:0] cmd   = we ? 8'h38 : 8'hEB;
+    wire [7:0] cmd   = fop_st ? fcmd : (we ? 8'h38 : 8'hEB);
     wire       cmdb  = cmd[3'd7 - step[2:0]];
     wire [3:0] adrn  = addr24[(5'd13 - step) * 4 +: 4];
 
@@ -124,10 +163,15 @@ module qspi_rf (
                                         : (wdi[0] ? dbyte[3:0] : dbyte[7:4]);
 
     assign sd_out = !in_txn ? 4'b0000 :
+                    fop_st ? (f_cmd ? {3'b000, cmdb} :
+                              f_addr ? {3'b000, fa[23]} :
+                              f_data ? wnib : 4'b0000) :
                     is_cmd  ? {3'b000, cmdb} :
                     is_addr ? adrn :
                     wr_data ? wnib : 4'b0000;
     assign sd_oe  = !in_txn ? 4'b0000 :
+                    fop_st ? ((f_cmd || f_addr) ? 4'b0001 :
+                              f_data ? 4'b1111 : 4'b0000) :
                     is_cmd  ? 4'b0001 :
                     (is_addr || wr_data || rd_mode) ? 4'b1111 : 4'b0000;
 
@@ -150,6 +194,14 @@ module qspi_rf (
     assign o_dbus_ack = txn_done && (state == S_MEM) && !mem_i;
     assign o_ibus_ack = txn_done && (state == S_MEM) &&  mem_i;
 
+    // a POLL completes the op: BUSY clear -> done; pcnt full -> TIMEOUT
+    assign o_fop_ack = fop_st && (fstg == F_POLL) && sck && (step == 5'd15)
+                       && (!fbusy || (&pcnt));
+
+    assign o_fa      = fa;
+    assign o_wen     = wen;
+    assign o_timeout = timeout;
+
     wire [31:0] rdt = {b2[27:24], b2[31:28], b2[19:16], b2[23:20],
                        b2[11:8],  b2[15:12], b2[3:0],   b2[7:4]};
     assign o_ibus_rdt = rdt;
@@ -169,6 +221,15 @@ module qspi_rf (
             rf_ph  <= 1'b0;
             dirty  <= 1'b0;
             mem_i  <= 1'b0;
+            fa     <= 24'b0;
+            pcnt   <= {POLL_BITS{1'b0}};
+            fstg   <= F_WREN;
+            fdat   <= 1'b0;
+            ferase <= 1'b0;
+            fbusy  <= 1'b0;
+            fop    <= 1'b0;
+            wen    <= 1'b0;
+            timeout<= 1'b0;
         end else begin
             rreq_r <= i_rreq;
             if (rreq_r) begin
@@ -194,17 +255,42 @@ module qspi_rf (
             if (i_wen0)
                 dirty <= 1'b1;
 
+            // flash register writes (dbus stable while the store waits)
+            if (i_fa_we)
+                fa <= {i_dbus_sel[2] ? i_dbus_dat[23:16] : fa[23:16],
+                       i_dbus_sel[1] ? i_dbus_dat[15:8]  : fa[15:8],
+                       i_dbus_sel[0] ? i_dbus_dat[7:0]   : fa[7:0]};
+            if (i_stat_we) begin
+                wen <= i_dbus_dat[1];
+                if (i_dbus_dat[0])       // W1C on the TIMEOUT bit
+                    timeout <= 1'b0;
+            end
+
             case (state)
             S_IDLE: begin
                 sck <= 1'b0;
                 if (gap != 0)
                     gap <= gap - 2'd1;
-                else if (dirty && (rf_go || i_dbus_req || i_ibus_req)) begin
+                else if (fop) begin     // resume next stage after a CS gap
+                    state <= S_FOP;
+                    step  <= 5'b0;
+                end else if (dirty && (rf_go || i_dbus_req || i_ibus_req ||
+                                       i_fop_req)) begin
                     state <= S_FLUSH;
                     step  <= 5'b0;
                 end else if (rf_go) begin
                     state <= rf_ph ? S_RD1 : S_RD0;
                     step  <= 5'b0;
+                end else if (i_fop_req) begin
+                    state   <= S_FOP;
+                    step    <= 5'b0;
+                    fstg    <= F_WREN;
+                    fdat    <= 1'b0;
+                    ferase  <= i_fop_erase;
+                    fbusy   <= 1'b0;
+                    fop     <= 1'b1;
+                    pcnt    <= {POLL_BITS{1'b0}};
+                    timeout <= 1'b0;
                 end else if (i_dbus_req) begin
                     state <= S_MEM;
                     mem_i <= 1'b0;
@@ -240,6 +326,73 @@ module qspi_rf (
                         endcase
                     end else
                         step <= step + 5'd1;
+                end
+            end
+
+            S_FOP: begin
+                sck <= ~sck;
+                if (!sck) begin
+                    // SCK rises at step 15 of a poll: status bit0 = BUSY
+                    if ((fstg == F_POLL) && (step == 5'd15))
+                        fbusy <= sd_in[1];
+                end else begin        // SCK falls
+                    case (fstg)
+                    F_WREN: begin     // cmd only, then CS-high gap
+                        if (step == 5'd7) begin
+                            sck   <= 1'b0;
+                            gap   <= 2'd1;
+                            step  <= 5'b0;
+                            fstg  <= F_CMD;
+                            state <= S_IDLE;
+                        end else
+                            step <= step + 5'd1;
+                    end
+                    F_CMD: begin
+                        if (f_addr)
+                            fa <= {fa[22:0], fa[23]};
+                        if (!fdat) begin
+                            if (step == 5'd31) begin
+                                if (ferase) begin  // erase done -> POLL
+                                    sck   <= 1'b0;
+                                    gap   <= 2'd1;
+                                    step  <= 5'b0;
+                                    fstg  <= F_POLL;
+                                    state <= S_IDLE;
+                                end else begin     // prog -> quad data phase
+                                    fdat <= 1'b1;
+                                    step <= 5'd14;
+                                end
+                            end else
+                                step <= step + 5'd1;
+                        end else if (step ==
+                                     (5'd13 + {1'b0, wlen_eff, 1'b0})) begin
+                            sck   <= 1'b0;
+                            gap   <= 2'd1;
+                            step  <= 5'b0;
+                            fdat  <= 1'b0;
+                            fstg  <= F_POLL;
+                            state <= S_IDLE;
+                        end else
+                            step <= step + 5'd1;
+                    end
+                    default: begin    // F_POLL: cmd + 8 released clocks
+                        if (step == 5'd15) begin
+                            sck   <= 1'b0;
+                            step  <= 5'b0;
+                            state <= S_IDLE;
+                            if (!fbusy)
+                                fop <= 1'b0;          // done -> ack
+                            else if (&pcnt) begin
+                                fop     <= 1'b0;
+                                timeout <= 1'b1;      // done -> ack + TIMEOUT
+                            end else begin
+                                pcnt <= pcnt + 1'b1;
+                                gap  <= 2'd1;         // poll again
+                            end
+                        end else
+                            step <= step + 5'd1;
+                    end
+                    endcase
                 end
             end
 

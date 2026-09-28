@@ -19,6 +19,11 @@ PROJECT_SOURCES = $(SERV_SOURCES) qspi_rf.v gpio.v \
 HEX ?= fw/hello.hex
 PLUSARGS += +HEX=$(HEX)
 
+# flashtimeout needs a flash that never finishes (poll limit lives in tb.v)
+ifeq ($(HEX),fw/flashtimeout.hex)
+PLUSARGS += +STUCK_BUSY
+endif
+
 ifneq ($(GATES),yes)
 
 # RTL simulation:

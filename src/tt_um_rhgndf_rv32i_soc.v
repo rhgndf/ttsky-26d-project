@@ -7,7 +7,9 @@
 //   adr[31]=0, [24]=1 -> PSRAM CS1, base 0x0100_0000
 // QSPI Pmod: uio[0]=CS0, [1]=SD0, [2]=SD1, [3]=SCK, [4]=SD2, [5]=SD3,
 //            [6]=CS1, [7]=CS2 (unused, driven high).
-module tt_um_rhgndf_rv32i_soc (
+module tt_um_rhgndf_rv32i_soc #(
+    parameter POLL_BITS = 20
+) (
     input  wire [7:0] ui_in,    // GPIO_IN (ui_in[0] = SD card MISO later)
     output wire [7:0] uo_out,   // GPIO_OUT (uo_out[0] = UART TX by software)
     input  wire [7:0] uio_in,   // QSPI Pmod inputs
@@ -95,8 +97,16 @@ module tt_um_rhgndf_rv32i_soc (
     wire       cs0_n, cs1_n, sck;
     wire       eng_ibus_ack, eng_dbus_ack;
     wire [31:0] eng_rdt;
+    wire [23:0] eng_fa;
+    wire       eng_wen, eng_timeout, fop_ack;
 
-    qspi_rf qrf (
+    // flash register decode: periph block adr[5]=1, reg = adr[3:2]
+    wire       fblk      = d_periph && dbus_adr[5];
+    wire       fop_store = fblk && dbus_cyc && dbus_we &&
+                           (dbus_adr[3:2] == 2'd1 || dbus_adr[3:2] == 2'd2);
+    wire       fop_stall = fop_store && eng_wen;   // WEN=0 -> fast_ack no-op
+
+    qspi_rf #(.POLL_BITS(POLL_BITS)) qrf (
         .clk        (clk),
         .rst_n      (rst_n),
         .i_wreq     (rf_wreq),
@@ -119,6 +129,14 @@ module tt_um_rhgndf_rv32i_soc (
         .i_dbus_dat (dbus_dat),
         .i_dbus_sel (dbus_sel),
         .o_dbus_ack (eng_dbus_ack),
+        .i_fa_we    (fblk && dbus_cyc && dbus_we && (dbus_adr[3:2] == 2'd0)),
+        .i_stat_we  (fblk && dbus_cyc && dbus_we && (dbus_adr[3:2] == 2'd3)),
+        .o_fa       (eng_fa),
+        .o_wen      (eng_wen),
+        .o_timeout  (eng_timeout),
+        .i_fop_req  (fop_stall),
+        .i_fop_erase(dbus_adr[3:2] == 2'd2),
+        .o_fop_ack  (fop_ack),
         .cs0_n      (cs0_n),
         .cs1_n      (cs1_n),
         .sck        (sck),
@@ -130,7 +148,7 @@ module tt_um_rhgndf_rv32i_soc (
     // ---------------------------------------------------------------
     // GPIO peripheral
     // ---------------------------------------------------------------
-    wire       gpio_we = d_periph && dbus_cyc && dbus_we;
+    wire       gpio_we = d_periph && !dbus_adr[5] && dbus_cyc && dbus_we;
     wire [7:0] gpio_out;
     gpio gpio_i (
         .clk      (clk),
@@ -155,10 +173,17 @@ module tt_um_rhgndf_rv32i_soc (
     always @(posedge clk) ack_seen <= dbus_cyc && dbus_ack;
     wire fast_ack = dbus_cyc && !ack_seen;
 
-    assign dbus_ack = d_periph   ? fast_ack :
+    assign dbus_ack = fop_stall  ? fop_ack :
+                      d_periph   ? fast_ack :
                       d_flash_wr ? fast_ack :   // flash write: ack + drop
                       eng_dbus_ack;
-    assign dbus_rdt = d_periph ? {24'b0, ui_in} : eng_rdt;
+
+    // flash reg reads: 0x20 fa, 0x2c {wen,timeout}; PROG/ERASE read 0
+    wire [31:0] frdt = (dbus_adr[3:2] == 2'd0) ? {8'b0, eng_fa} :
+                       (dbus_adr[3:2] == 2'd3) ? {30'b0, eng_wen, eng_timeout} :
+                       32'b0;
+    assign dbus_rdt = d_periph ? (dbus_adr[5] ? frdt : {24'b0, ui_in})
+                               : eng_rdt;
 
     // ---------------------------------------------------------------
     // pads: uio[0]=CS0 [1]=SD0 [2]=SD1 [3]=SCK [4]=SD2 [5]=SD3 [6]=CS1 [7]=CS2

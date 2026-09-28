@@ -27,7 +27,9 @@ module tb ();
   wire VGND = 1'b0;
 `endif
 
-  tt_um_rhgndf_rv32i_soc user_project (
+  // Poll counter kept small so the timeout path is reachable in sim;
+  // BUSY_POLLS below stays below the 2^4-1 limit for normal ops.
+  tt_um_rhgndf_rv32i_soc #(.POLL_BITS(4)) user_project (
 `ifdef GL_TEST
       .VPWR(VPWR),
       .VGND(VGND),
@@ -72,7 +74,7 @@ module tb ();
   wire tohost_flag;
   wire [31:0] tohost_val;
 
-  flash_model #(.SIZE(1024*1024)) flash (
+  flash_model #(.SIZE(1024*1024), .BUSY_POLLS(3)) flash (
       .sck    (sck),
       .cs_n   (cs0),
       .sd     (sd_pins),

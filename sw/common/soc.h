@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define REG32(addr)      (*(volatile uint32_t *)(addr))
+#define REG16(addr)      (*(volatile uint16_t *)(addr))
 #define REG8(addr)       (*(volatile uint8_t *)(addr))
 
 /* Memory map (SERV bus addresses) */

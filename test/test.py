@@ -128,6 +128,18 @@ async def test_rftest(dut):
     await run_program(dut, "rftest", expect_uart=b"rftest done\n")
 
 
+@cocotb.test(skip=GATES or "flashtest" not in HEX)
+async def test_flashtest(dut):
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
+    await run_program(dut, "flashtest", expect_uart=b"flashtest done\n")
+
+
+@cocotb.test(skip=GATES or "flashtimeout" not in HEX)
+async def test_flashtimeout(dut):
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
+    await run_program(dut, "flashtimeout", expect_uart=b"flashtimeout done\n")
+
+
 @cocotb.test(skip=GATES or "rv32ui" not in HEX)
 async def test_riscv(dut):
     cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())

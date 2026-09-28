@@ -81,7 +81,8 @@ module psram_model #(
                     addr = 24'b0;
                     if (cmd == 8'hEB || cmd == 8'h38) state <= S_ADDR;
                     else begin
-                        err("unknown command");
+                        $display("PSRAM_ERROR: unknown command %02x (t=%0t)", cmd, $time);
+                        error = 1'b1;
                         state <= S_IDLE;
                     end
                 end
@@ -115,6 +116,7 @@ module psram_model #(
             S_RD: ;
             S_WR: begin
                 if (host_oe != 4'hf) err("host oe!=f in write data");
+
                 if (wnib[0] == 0) begin
                     wbyte[7:4] = sd;
                 end else begin
