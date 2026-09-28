@@ -13,15 +13,14 @@
 
   "//": "PL_TARGET_DENSITY_PCT - You can increase this if Global Placement fails with error GPL-0302.",
   "//": "Users have reported that values up to 80 worked well for them.",
-  "PL_TARGET_DENSITY_PCT": 90,
+  "PL_TARGET_DENSITY_PCT": 85,
 
   "//": "CLOCK_PERIOD - Increase this in case you are getting setup time violations.",
   "//": "The value is in nanoseconds, so 20ns == 50MHz.",
   "CLOCK_PERIOD": 20,
 
   "//": "Hold slack margin - Increase them in case you are getting hold violations.",
-  "PL_RESIZER_HOLD_SLACK_MARGIN": 0.1,
-  "GRT_RESIZER_HOLD_SLACK_MARGIN": 0.05,
+
 
   "//": "RUN_LINTER, LINTER_INCLUDE_PDK_MODELS - Disabling the linter is not recommended!",
   "RUN_LINTER": 1,
@@ -37,6 +36,13 @@
   "//": "effective capacity (DPL failures during CTS and post-CTS resizer).",
   "GPL_CELL_PADDING": 0,
   "DPL_CELL_PADDING": 0,
+  "//": "Allow _1 variants of plain combinational cells and dfxtp_1/dfrtp_1",
+  "//": "in synthesis so the tighter 1x1 die gets the smaller cells.",
+  "SYNTH_EXCLUDED_CELL_FILE": "dir::no_synth_area.cells",
+  "//": "Zero resizer hold margins: CLOCK_UNCERTAINTY 0.25ns already covers",
+  "//": "hold; the 0.1 margin forced 300+ unneeded hold buffers (+24% area).",
+  "PL_RESIZER_HOLD_SLACK_MARGIN": 0.0,
+  "GRT_RESIZER_HOLD_SLACK_MARGIN": 0.0,
 
 
   "//": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
