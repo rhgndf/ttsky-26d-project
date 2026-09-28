@@ -235,11 +235,12 @@ module rv32i_core (
             end
             // ---------- adder result ready -> res
             ST_ALUWB: begin
-                case (funct3)
-                3'b010:   res <= {31'b0, cmp_lt};
-                3'b011:   res <= {31'b0, cmp_ltu};
-                default:  res <= add_sum;
-                endcase
+                if (opcode[4:0] == 5'b10011 && funct3 == 3'b010)
+                    res <= {31'b0, cmp_lt};
+                else if (opcode[4:0] == 5'b10011 && funct3 == 3'b011)
+                    res <= {31'b0, cmp_ltu};
+                else
+                    res <= add_sum;
                 state <= ST_WB;
             end
             // ---------- jump target: adder holds pc+imm or rs1+imm
