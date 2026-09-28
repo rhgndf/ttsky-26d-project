@@ -4,17 +4,12 @@
 // fail code = (test number << 1) | 1  (odd, never 1)
 #define FAIL(n) do { TOHOST = 0; REG32(0x0101FEF8) = ((n) << 1) | 1; for(;;); } while (0)
 
-#define FLASH_ADDR   REG32(0x80000020u)
-#define FLASH_ERASE  REG32(0x80000028u)
-#define FLASH_STATUS REG32(0x8000002Cu)
-
 int main(void) {
     uart_init(0);
     print("flashtimeout\n");
 
-    FLASH_ADDR   = 0x10000u;
-    FLASH_STATUS = 2;            // WEN=1
-    FLASH_ERASE  = 1;            // flash stuck busy -> poll limit -> TIMEOUT
+    FLASH_STATUS = 2;                        // WEN=1
+    REG32(FLASH_ERASE_WIN + 0x10000u) = 1;   // flash stuck busy -> TIMEOUT
 
     // store returned; TIMEOUT must be set
     if ((FLASH_STATUS & 1) == 0) FAIL(1);

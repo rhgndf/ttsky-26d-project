@@ -2,7 +2,9 @@
 // tt_um_rhgndf_rv32i_soc — RV32I SoC for Tiny Tapeout 1x1
 // SERV 1.4.0 (unmodified) + QSPI flash/PSRAM controller + RF-in-PSRAM adapter
 // + GPIO.  Memory map (docs/architecture.md):
-//   adr[31]=1        -> peripherals (GPIO: read=ui_in, write=uo_out)
+//   adr[31]=1, [29:28]=0 -> peripherals (GPIO / FLASH_STATUS)
+//   adr[31]=1, [28]=1    -> FLASH_PROG window, a[23:0] = op address
+//   adr[31]=1, [29]=1    -> FLASH_ERASE window, a[23:0] = sector
 //   adr[31]=0, [24]=0 -> flash CS0, adr[23:0], read-only (writes acked+ignored)
 //   adr[31]=0, [24]=1 -> PSRAM CS1, base 0x0100_0000
 // QSPI Pmod: uio[0]=CS0, [1]=SD0, [2]=SD1, [3]=SCK, [4]=SD2, [5]=SD3,
@@ -90,20 +92,19 @@ module tt_um_rhgndf_rv32i_soc #(
     // Peripheral and flash-region-write ops never reach it.
     // ---------------------------------------------------------------
     wire i_periph = ibus_adr[31];
-    wire d_periph = dbus_adr[31];
-    wire d_flash_wr = dbus_cyc && !d_periph && dbus_we && !dbus_adr[24];
+    wire d_periph = dbus_adr[31] && (dbus_adr[29:28] == 2'b00);
+    wire d_flash_wr = dbus_cyc && !dbus_adr[31] && dbus_we && !dbus_adr[24];
 
     wire [3:0] sd_out, sd_oe, sd_in;
     wire       cs0_n, cs1_n, sck;
     wire       eng_ibus_ack, eng_dbus_ack;
     wire [31:0] eng_rdt;
-    wire [23:0] eng_fa;
     wire       eng_wen, eng_timeout, fop_ack;
 
-    // flash register decode: periph block adr[5]=1, reg = adr[3:2]
-    wire       fblk      = d_periph && dbus_adr[5];
-    wire       fop_store = fblk && dbus_cyc && dbus_we &&
-                           (dbus_adr[3:2] == 2'd1 || dbus_adr[3:2] == 2'd2);
+    // flash ops are address windows: adr[28]=PROG, adr[29]=ERASE, op
+    // address = a[23:0]. FLASH_STATUS stays a peripheral reg at 0x8000_002C.
+    wire       fop_store = dbus_cyc && dbus_we && dbus_adr[31] &&
+                           (dbus_adr[28] || dbus_adr[29]);
     wire       fop_stall = fop_store && eng_wen;   // WEN=0 -> fast_ack no-op
 
     qspi_rf #(.POLL_BITS(POLL_BITS)) qrf (
@@ -123,19 +124,18 @@ module tt_um_rhgndf_rv32i_soc #(
         .i_ibus_adr (ibus_adr),
         .o_ibus_rdt (eng_rdt),
         .o_ibus_ack (eng_ibus_ack),
-        .i_dbus_req (dbus_cyc && !d_periph && !d_flash_wr),
+        .i_dbus_req (dbus_cyc && !dbus_adr[31] && !d_flash_wr),
         .i_dbus_we  (dbus_we),
         .i_dbus_adr (dbus_adr),
         .i_dbus_dat (dbus_dat),
         .i_dbus_sel (dbus_sel),
         .o_dbus_ack (eng_dbus_ack),
-        .i_fa_we    (fblk && dbus_cyc && dbus_we && (dbus_adr[3:2] == 2'd0)),
-        .i_stat_we  (fblk && dbus_cyc && dbus_we && (dbus_adr[3:2] == 2'd3)),
-        .o_fa       (eng_fa),
+        .i_stat_we  (d_periph && dbus_adr[5] && dbus_cyc && dbus_we &&
+                      (dbus_adr[3:2] == 2'd3)),
         .o_wen      (eng_wen),
         .o_timeout  (eng_timeout),
         .i_fop_req  (fop_stall),
-        .i_fop_erase(dbus_adr[3:2] == 2'd2),
+        .i_fop_erase(dbus_adr[29]),
         .o_fop_ack  (fop_ack),
         .cs0_n      (cs0_n),
         .cs1_n      (cs1_n),
@@ -173,15 +173,14 @@ module tt_um_rhgndf_rv32i_soc #(
     always @(posedge clk) ack_seen <= dbus_cyc && dbus_ack;
     wire fast_ack = dbus_cyc && !ack_seen;
 
-    assign dbus_ack = fop_stall  ? fop_ack :
-                      d_periph   ? fast_ack :
-                      d_flash_wr ? fast_ack :   // flash write: ack + drop
+    assign dbus_ack = fop_stall    ? fop_ack :
+                      dbus_adr[31] ? fast_ack :   // periph + window access
+                      d_flash_wr   ? fast_ack :   // flash write: ack + drop
                       eng_dbus_ack;
 
-    // flash reg reads: 0x20 fa, 0x2c {wen,timeout}; PROG/ERASE read 0
-    wire [31:0] frdt = (dbus_adr[3:2] == 2'd0) ? {8'b0, eng_fa} :
-                       (dbus_adr[3:2] == 2'd3) ? {30'b0, eng_wen, eng_timeout} :
-                       32'b0;
+    // flash status read: {wen,timeout}; other periph-block regs read 0
+    wire [31:0] frdt = (dbus_adr[3:2] == 2'd3) ? {30'b0, eng_wen, eng_timeout}
+                                             : 32'b0;
     assign dbus_rdt = d_periph ? (dbus_adr[5] ? frdt : {24'b0, ui_in})
                                : eng_rdt;
 

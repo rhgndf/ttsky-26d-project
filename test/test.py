@@ -110,7 +110,7 @@ async def run_program(dut, name, expect_uart=b"", timeout_ns=200_000_000):
             f"{name}: expected {expect_uart!r} in uart output {chars!r}"
 
 
-@cocotb.test(skip=GATES or "hello" not in HEX)
+@cocotb.test(skip="hello" not in HEX)   # also runs under GATES=yes
 async def test_hello(dut):
     cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
     await run_program(dut, "hello", expect_uart=b"Hello RV32I\n")
