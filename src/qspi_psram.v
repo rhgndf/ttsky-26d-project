@@ -1,23 +1,19 @@
 `default_nettype none
 // QSPI PSRAM controller (APS6404L-compatible, SPI-mode command 0xEB read / 0x38 write).
-// Fixed 4-byte word transactions. Sub-word stores do read-modify-write.
+// Fixed 4-byte word transactions; 6 dummy cycles. Sub-word stores are merged
+// upstream in the core — this engine always reads or writes a full word.
 // SCK = clk/2: each SCK half-period is one clk; outputs change only when SCK goes low.
-// Read data sampled on the clk edge that raises SCK (or the edge that lowers it when
-// memcfg_late_sample=1).
+// Read data sampled on the clk edge that raises SCK.
 module qspi_psram (
     input  wire        clk,
     input  wire        rst_n,
     // CPU-side bus
-    input  wire        req,          // level; a transaction starts when seen in gap state
+    input  wire        req,          // level; a transaction starts when seen in idle
     input  wire        wr,           // 1=write, 0=read
-    input  wire [23:0] addr,         // word-aligned byte address
+    input  wire [23:0] addr,         // byte address ([1:0] ignored)
     input  wire [31:0] wdata,
-    input  wire [3:0]  wstrb,        // != 4'b1111 -> read-modify-write
     output reg         ready,        // 1-clk pulse; rdata valid for reads
     output reg  [31:0] rdata,
-    // config
-    input  wire [3:0]  cfg_dummy,    // dummy SCK cycles between addr and data
-    input  wire        cfg_late_sample,
     // QSPI pins
     output reg         sck,          // idle low
     output reg         cs_n,
@@ -29,10 +25,9 @@ module qspi_psram (
     localparam PH_IDLE  = 3'd0,  // CS_n high gap, waiting for req
                PH_CMD   = 3'd1,  // 8 bits serial on SD0
                PH_ADDR  = 3'd2,  // 6 nibbles quad
-               PH_DUMMY = 3'd3,  // dummy SCK cycles (reads only)
+               PH_DUMMY = 3'd3,  // 6 dummy SCK cycles (reads only)
                PH_RDATA = 3'd4,  // 8 nibbles in
-               PH_WDATA = 3'd5,  // 8 nibbles out
-               PH_GAP   = 3'd6;  // CS_n high gap between RMW read and write
+               PH_WDATA = 3'd5;  // 8 nibbles out
 
     reg [2:0]  phase;
     reg        sck_hi;             // 0: next clk raises SCK, 1: next clk lowers SCK
@@ -42,10 +37,8 @@ module qspi_psram (
     reg [23:0] addrsh;             // quad addr shift reg
     reg [31:0] wshift;             // write data store
     reg [31:0] rdshift;            // read data shift reg
-    reg [23:0] cur_addr;           // saved address (for RMW second txn)
-    reg        rmw;                // pending write part of a read-modify-write
-    reg  [3:0] saved_wstrb;
-    wire _unused = &{1'b0, cmdsh[7], 1'b0}; // cmdsh[7] consumed by shift-out
+    reg        is_wr;              // current transaction is a write
+    wire _unused = &{1'b0, cmdsh[7], addr[1:0], 1'b0}; // cmdsh[7] consumed by shift-out
 
     // write data nibbles: b0hi,b0lo,b1hi,b1lo,... (low byte first, high nibble first)
     /* verilator lint_off UNUSED */
@@ -54,15 +47,15 @@ module qspi_psram (
     endfunction
     /* verilator lint_on UNUSED */
 
-    task start_txn(input is_wr);
+    task start_txn(input wr_i);
         begin
-            cmdsh   <= is_wr ? 8'h38 : 8'hEB;
+            cmdsh   <= wr_i ? 8'h38 : 8'hEB;
             cnt     <= 4'd8;
             cs_n    <= 1'b0;
             sck     <= 1'b0;
             sck_hi  <= 1'b0;
             sd_oe   <= 4'b0001;              // cmd on SD0 only
-            sd_out  <= {3'b0, ~is_wr};       // cmd[7]
+            sd_out  <= {3'b0, ~wr_i};        // cmd[7]
             phase   <= PH_CMD;
         end
     endtask
@@ -77,7 +70,6 @@ module qspi_psram (
             ready  <= 1'b0;
             sck_hi <= 1'b0;
             csgap  <= 3'd4;
-            rmw    <= 1'b0;
         end else begin
             ready <= 1'b0;
             case (phase)
@@ -89,12 +81,10 @@ module qspi_psram (
                 if (csgap != 0) begin
                     csgap <= csgap - 1;
                 end else if (req) begin
-                    addrsh      <= addr;
-                    cur_addr    <= addr;
-                    wshift      <= wdata;
-                    saved_wstrb <= wstrb;
-                    rmw         <= wr && (wstrb != 4'b1111);
-                    start_txn(wr && (wstrb == 4'b1111)); // rmw does a read first
+                    addrsh <= addr;
+                    wshift <= wdata;
+                    is_wr  <= wr;
+                    start_txn(wr);
                 end
             end
             // -------- serial command, SD0 only
@@ -122,14 +112,14 @@ module qspi_psram (
                     addrsh <= {addrsh[19:0], 4'b0};
                     sd_out <= addrsh[19:16];
                     if (cnt == 1) begin
-                        if (rmw || saved_wstrb == 0) begin
-                            cnt   <= cfg_dummy;
-                            sd_oe <= 4'b0;
-                            phase <= PH_DUMMY;
-                        end else begin
+                        if (is_wr) begin
                             cnt    <= 4'd8;
                             sd_out <= wnib(wshift, 4'd0);
                             phase  <= PH_WDATA;
+                        end else begin
+                            cnt   <= 4'd6;
+                            sd_oe <= 4'b0;
+                            phase <= PH_DUMMY;
                         end
                     end
                 end
@@ -147,39 +137,20 @@ module qspi_psram (
                     end
                 end
             end
-            // -------- quad read data. Sample on the configured half-edge;
-            //          nibbles complete at every other half-edge.
+            // -------- quad read data: sample on the SCK-rising half-edge
             PH_RDATA: begin
-                if (sck_hi == cfg_late_sample) begin // sampling half-edge
-                    rdshift <= {rdshift[27:0], sd_in};
-                end
+                if (!sck_hi) rdshift <= {rdshift[27:0], sd_in};
                 sck    <= ~sck;
                 sck_hi <= ~sck_hi;
-                // A nibble completes at each "second" half-edge: the edge AFTER the
-                // sampling edge. !late_sample: sample on rise -> completes on fall.
-                // late_sample:  sample on fall  -> completes on next rise.
-                if (sck_hi != cfg_late_sample) begin
+                if (sck_hi) begin          // a nibble completes at each falling edge
                     cnt <= cnt - 1;
                     if (cnt == 1) begin
-                        if (rmw) begin
-                            // merge captured bytes with wstrb
-                            // rdshift[31:24]=b0, [23:16]=b1, [15:8]=b2, [7:0]=b3
-                            wshift[7:0]   <= saved_wstrb[0] ? wshift[7:0]   : rdshift[31:24];
-                            wshift[15:8]  <= saved_wstrb[1] ? wshift[15:8]  : rdshift[23:16];
-                            wshift[23:16] <= saved_wstrb[2] ? wshift[23:16] : rdshift[15:8];
-                            wshift[31:24] <= saved_wstrb[3] ? wshift[31:24] : rdshift[7:0];
-                            rmw    <= 1'b0;
-                            cs_n   <= 1'b1;
-                            csgap  <= 3'd4;
-                            phase  <= PH_GAP;
-                        end else begin
-                            // byte-swap: wire order b0 first -> rdata={b3,b2,b1,b0}
-                            rdata <= {rdshift[7:0], rdshift[15:8], rdshift[23:16], rdshift[31:24]};
-                            cs_n  <= 1'b1;
-                            csgap <= 3'd4;
-                            ready <= 1'b1;
-                            phase <= PH_IDLE;
-                        end
+                        // byte-swap: wire order b0 first -> rdata={b3,b2,b1,b0}
+                        rdata <= {rdshift[7:0], rdshift[15:8], rdshift[23:16], rdshift[31:24]};
+                        cs_n  <= 1'b1;
+                        csgap <= 3'd4;
+                        ready <= 1'b1;
+                        phase <= PH_IDLE;
                     end
                 end
             end
@@ -197,17 +168,6 @@ module qspi_psram (
                         ready <= 1'b1;
                         phase <= PH_IDLE;
                     end
-                end
-            end
-            // -------- gap between RMW read and write
-            PH_GAP: begin
-                sck   <= 1'b0;
-                sd_oe <= 4'b0;
-                if (csgap != 0) begin
-                    csgap <= csgap - 1;
-                end else begin
-                    addrsh <= cur_addr;
-                    start_txn(1'b1);
                 end
             end
             default: phase <= PH_IDLE;

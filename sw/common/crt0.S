@@ -1,7 +1,11 @@
     .section .text
     .globl _start
+    # mtvec = 4: word at 0 is `j _start`, word at 4 is `j trap_entry`
+    j    _start
+    j    trap_entry
 _start:
-    lui  sp, 0x40          # stack top = 0x40000 (end of 256K PSRAM window)
+    lui  sp, %hi(0x3FE00)
+    addi sp, sp, %lo(0x3FE00)   # stack top = 0x3FE00
     # zero .bss
     la   t0, _sbss
     la   t1, _ebss
@@ -11,3 +15,8 @@ _start:
     j    1b
 2:  call main
 3:  j    3b
+
+    # weak default trap handler: infinite loop (programs may override)
+    .weak trap_entry
+trap_entry:
+4:  j    4b

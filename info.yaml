@@ -7,15 +7,16 @@ project:
   language:     "Verilog"
   clock_hz:     50000000
 
-  tiles: "2x2"   # provisional
+  tiles: "1x1"
 
   top_module:  "tt_um_rhgndf_rv32i_soc"
 
   source_files:
     - "rv32i_core.v"
     - "qspi_psram.v"
-    - "sram.v"
     - "uart.v"
+    - "timer.v"
+    - "serial.v"
     - "tt_um_rhgndf_rv32i_soc.v"
 
 pinout:
@@ -27,17 +28,17 @@ pinout:
   ui[4]: "GPIO in"
   ui[5]: "GPIO in"
   ui[6]: "GPIO in"
-  ui[7]: "UART RX"
+  ui[7]: "GPIO in"
 
   # Outputs
-  uo[0]: "UART TX (alt fn) / GPIO out"
-  uo[1]: "SPI SCK (alt fn) / GPIO out"
-  uo[2]: "SPI MOSI (alt fn) / GPIO out"
-  uo[3]: "SPI CS_n (alt fn) / GPIO out"
-  uo[4]: "Timer PWM (alt fn) / GPIO out"
-  uo[5]: "GPIO out"
-  uo[6]: "GPIO out"
-  uo[7]: "GPIO out"
+  uo[0]: "UART TX"
+  uo[1]: "SPI SCK"
+  uo[2]: "SPI MOSI"
+  uo[3]: "SPI CS_n"
+  uo[4]: "GPIO out 0"
+  uo[5]: "GPIO out 1"
+  uo[6]: "GPIO out 2"
+  uo[7]: "GPIO out 3"
 
   # Bidirectional pins
   uio[0]: "PSRAM CS_n (out)"

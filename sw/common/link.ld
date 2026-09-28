@@ -1,7 +1,7 @@
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 MEMORY {
-    PSRAM (rwx) : ORIGIN = 0x00000000, LENGTH = 256K
+    PSRAM (rwx) : ORIGIN = 0x00000000, LENGTH = 0x3FF00 /* regfile/tohost above */
 }
 SECTIONS {
     .text : { *(.text*) } > PSRAM

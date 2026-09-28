@@ -6,11 +6,15 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = rv32i_core.v qspi_psram.v sram.v uart.v tt_um_rhgndf_rv32i_soc.v
+PROJECT_SOURCES = rv32i_core.v qspi_psram.v uart.v timer.v serial.v tt_um_rhgndf_rv32i_soc.v
 
 # Firmware image loaded into the PSRAM model; HEX paths are relative to test/
 HEX ?= fw/hello.hex
-PLUSARGS += +HEX=$(HEX) +DUMMY=6
+PLUSARGS += +HEX=$(HEX)
+# SPI loopback (MOSI->MISO) opt-in: make SPI_LOOP=1
+ifdef SPI_LOOP
+PLUSARGS += +SPI_LOOP=1
+endif
 
 ifneq ($(GATES),yes)
 
@@ -39,7 +43,7 @@ endif
 COMPILE_ARGS 		+= -I$(SRC_DIR)
 
 # Include the testbench sources:
-VERILOG_SOURCES += $(PWD)/tb.v $(PWD)/psram_model.v
+VERILOG_SOURCES += $(PWD)/tb.v $(PWD)/psram_model.v $(PWD)/i2c_slave_model.v
 TOPLEVEL = tb
 
 # List test modules to run, separated by commas and without the .py suffix:

@@ -3,11 +3,10 @@
 
 /* Testbench: tt_um_rhgndf_rv32i_soc + QSPI PSRAM model (256 KB).
    Firmware image: +HEX=<path> plusarg ($readmemh, byte-wide verilog hex).
-   PSRAM dummy cycles: +DUMMY=<n> plusarg (default 6, must match MEMCFG).
+   +SPI_LOOP=1: loop SPI MOSI (uo_out[2]) back into MISO (ui_in[0]).
+   I2C slave model at addr 0x50 (EEPROM-like pointer) on uio[7:6].
    Exposes tohost_flag/tohost_val and psram error to cocotb. */
 module tb ();
-
-  localparam SRAM_BYTES = 256;
 
   initial begin
     $dumpfile("tb.fst");
@@ -28,7 +27,12 @@ module tb ();
   wire VGND = 1'b0;
 `endif
 
-  tt_um_rhgndf_rv32i_soc #(.SRAM_BYTES(SRAM_BYTES)) user_project (
+  integer spi_loop;
+  initial begin
+    if (!$value$plusargs("SPI_LOOP=%d", spi_loop)) spi_loop = 0;
+  end
+
+  tt_um_rhgndf_rv32i_soc user_project (
 `ifdef GL_TEST
       .VPWR(VPWR),
       .VGND(VGND),
@@ -55,7 +59,27 @@ module tb ();
     end
   endgenerate
   assign uio_in[1:0] = uio_out[1:0]; // SCK, CS_n loop back (unused by DUT)
-  assign uio_in[7:6] = 2'b11;        // I2C pulled high (phase 2)
+
+  // ---- I2C lines: DUT open-drain + slave model open-drain, pulled high
+  wire sda_drv, scl_drv;
+  assign uio_in[7] = uio_oe[7] ? 1'b0 : (scl_drv ? 1'b0 : 1'b1); // SCL
+  assign uio_in[6] = uio_oe[6] ? 1'b0 : (sda_drv ? 1'b0 : 1'b1); // SDA
+
+  wire i2c_error;
+
+  i2c_slave_model u_i2c (
+      .scl (uio_in[7]),
+      .sda (uio_in[6]),
+      .sda_drv (sda_drv),   // drives SDA low when 1 (open drain)
+      .error (i2c_error)
+  );
+  assign scl_drv = 1'b0;   // slave never stretches
+
+  // ---- SPI loopback option: MOSI -> MISO
+  always @(*) begin
+    ui_in = 8'b0;
+    if (spi_loop) ui_in[0] = uo_out[2]; // MOSI -> MISO
+  end
 
   wire        psram_error;
   wire        tohost_flag;
