@@ -152,6 +152,13 @@ module qspi_rf #(
     wire lfsr_fb = (POLL_BITS == 20) ? ~(b2[12] ^ b2[29])
                                    : ~(b2[31] ^ b2[28]);
     wire lfsr_done = fseed && (b2[31 -: POLL_BITS] == {POLL_BITS{1'b0}});
+`ifndef SYNTHESIS
+`ifndef YOSYS
+    if ((POLL_BITS != 4) && (POLL_BITS != 20)) begin : bad_poll_bits
+        initial $fatal(1, "qspi_rf: no LFSR taps for POLL_BITS=%0d", POLL_BITS);
+    end
+`endif
+`endif
     wire [23:0] fadr  = {i_dbus_adr[23:2], wofs};
     wire        fabit = fadr[5'd31 - step];
 

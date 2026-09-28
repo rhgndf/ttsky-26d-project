@@ -27,11 +27,13 @@ module flash_model #(
     reg [1023:0] hexfile;
     integer ki;
     integer stuck_busy;
+    integer op_count;         // accepted 0x20/0x32 ops (dup-op check)
     initial begin
         error  = 1'b0;
         sd_drv = 4'b0;
         sd_oe  = 4'b0;
         wel    = 1'b0;
+        op_count = 0;
         busy   = 1'b0;
         busy_n = 0;
         for (ki = 0; ki < SIZE; ki = ki + 1) mem[ki] = 8'h00;
@@ -97,6 +99,7 @@ module flash_model #(
                     8'h20, 8'h32: begin            // ERASE / PROG
                         if (!wel) err("program/erase without WREN");
                         if (busy) err("program/erase while BUSY");
+                        op_count = op_count + 1;
                         state <= S_SADDR;
                     end
                     8'h05: begin                   // READ STATUS

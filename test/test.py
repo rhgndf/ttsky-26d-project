@@ -132,12 +132,19 @@ async def test_rftest(dut):
 async def test_flashtest(dut):
     cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
     await run_program(dut, "flashtest", expect_uart=b"flashtest done\n")
+    # 6 WEN=1 window stores in main.c: 1 erase + 2 sw + 1 sh + 2 sb;
+    # each must reach the flash exactly once (dup-op regression check)
+    assert int(dut.flash.op_count.value) == 6, \
+        f"flashtest: op_count={int(dut.flash.op_count.value)}, expected 6"
 
 
 @cocotb.test(skip=GATES or "flashtimeout" not in HEX)
 async def test_flashtimeout(dut):
     cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
     await run_program(dut, "flashtimeout", expect_uart=b"flashtimeout done\n")
+    # 1 WEN=1 erase-window store in main.c
+    assert int(dut.flash.op_count.value) == 1, \
+        f"flashtimeout: op_count={int(dut.flash.op_count.value)}, expected 1"
 
 
 @cocotb.test(skip=GATES or "rv32ui" not in HEX)
