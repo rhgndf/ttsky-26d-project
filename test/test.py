@@ -1,40 +1,87 @@
-# SPDX-FileCopyrightText: © 2024 Tiny Tapeout
-# SPDX-License-Identifier: Apache-2.0
-
+import os
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import RisingEdge, Timer, ClockCycles, with_timeout
+
+CLK_NS = 20            # 50 MHz
+UART_DIV = 16          # firmware sets DIV=16
+GATES = os.getenv("GATES") == "yes"
+
+# which firmware image this sim run loaded (via +HEX=... plusarg)
+HEX = cocotb.plusargs.get("HEX", "")
 
 
-@cocotb.test()
-async def test_project(dut):
-    dut._log.info("Start")
+async def uart_rx(dut, chars, timeout_clks=5_000_000):
+    """Decode UART bytes on uo_out[0] (DIV=16 clks/bit) until timeout."""
+    tx = dut.uo_out
+    bit = UART_DIV * CLK_NS
+    got = bytearray()
+    nclks = 0
+    while True:
+        while tx.value[0] == 1:
+            await RisingEdge(dut.clk)
+            nclks += 1
+            if nclks > timeout_clks:
+                return got
+        await Timer(bit // 2 + 2, unit="ns")   # mid start bit, skewed off clk edges
+        byte = 0
+        for i in range(8):
+            await Timer(bit, unit="ns")
+            byte |= (1 if tx.value[0] == 1 else 0) << i
+        got.append(byte)
+        chars.append(byte)
+        await Timer(bit, unit="ns")
 
-    # Set the clock period to 10 us (100 KHz)
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
 
-    # Reset
-    dut._log.info("Reset")
+async def reset(dut):
     dut.ena.value = 1
-    dut.ui_in.value = 0
-    dut.uio_in.value = 0
+    dut.ui_in.value = 0xFF   # UART RX idle high
     dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 10)
+    await ClockCycles(dut.clk, 20)
     dut.rst_n.value = 1
 
-    dut._log.info("Test project behavior")
 
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
+async def wait_tohost(dut, timeout_ns=200_000_000):
+    try:
+        await with_timeout(RisingEdge(dut.tohost_flag), timeout_ns, "ns")
+    except Exception:
+        return None
+    return int(dut.tohost_val.value)
 
-    # Wait for one clock cycle to see the output values
-    await ClockCycles(dut.clk, 1)
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 50
+async def run_program(dut, name, expect_uart=b"", timeout_ns=200_000_000):
+    chars = []
+    rx = cocotb.start_soon(uart_rx(dut, chars))
+    await reset(dut)
+    val = await wait_tohost(dut, timeout_ns)
+    rx.kill()
+    assert val is not None, f"{name}: no tohost write (uart={bytes(chars)!r})"
+    assert int(dut.psram_error.value) == 0, f"{name}: PSRAM protocol error"
+    assert val == 1, f"{name}: tohost={val:#x} (uart={bytes(chars)!r})"
+    if expect_uart:
+        assert expect_uart in bytes(chars), \
+            f"{name}: expected {expect_uart!r} in uart output {bytes(chars)!r}"
 
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+
+@cocotb.test(skip=GATES or "hello" not in HEX)
+async def test_hello(dut):
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
+    await run_program(dut, "hello", expect_uart=b"Hello RV32I\n")
+
+
+@cocotb.test(skip=GATES or "memtest" not in HEX)
+async def test_memtest(dut):
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
+    await run_program(dut, "memtest", expect_uart=b"memtest done\n")
+
+
+@cocotb.test(skip=GATES or "traptest" not in HEX)
+async def test_traptest(dut):
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
+    await run_program(dut, "traptest", expect_uart=b"traptest done\n")
+
+
+@cocotb.test(skip=GATES or "rv32ui" not in HEX)
+async def test_riscv(dut):
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
+    await run_program(dut, HEX.split("/")[-1], timeout_ns=400_000_000)

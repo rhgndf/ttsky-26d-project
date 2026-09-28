@@ -6,7 +6,11 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v
+PROJECT_SOURCES = rv32i_core.v qspi_psram.v sram.v uart.v tt_um_rhgndf_rv32i_soc.v
+
+# Firmware image loaded into the PSRAM model; HEX paths are relative to test/
+HEX ?= fw/hello.hex
+PLUSARGS += +HEX=$(HEX) +DUMMY=6
 
 ifneq ($(GATES),yes)
 
@@ -35,7 +39,7 @@ endif
 COMPILE_ARGS 		+= -I$(SRC_DIR)
 
 # Include the testbench sources:
-VERILOG_SOURCES += $(PWD)/tb.v
+VERILOG_SOURCES += $(PWD)/tb.v $(PWD)/psram_model.v
 TOPLEVEL = tb
 
 # List test modules to run, separated by commas and without the .py suffix:
@@ -43,3 +47,12 @@ COCOTB_TEST_MODULES = test
 
 # include cocotb's make rules to take care of the simulator setup
 include $(shell cocotb-config --makefiles)/Makefile.sim
+
+# Run every firmware image through its own sim (each test self-selects by +HEX)
+FW_HEXS := $(sort $(wildcard fw/*.hex))
+test-progs:
+	@set -e; for h in $(FW_HEXS); do \
+	  echo "=== HEX=$$h ==="; \
+	  $(MAKE) HEX=$$h results.xml >/dev/null 2>&1 && \
+	    grep -o 'testsuite.*' results.xml | head -1 || { echo "FAIL $$h"; cat sim_build/rtl/cocotb.log 2>/dev/null | tail -20; exit 1; }; \
+	done
