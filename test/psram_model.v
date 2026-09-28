@@ -62,7 +62,11 @@ module psram_model #(
         end
     endfunction
 
-    always @(*) begin
+    // checked 1 ns after any drive change so zero-time decode transients at
+    // clock edges (combinational sd_oe) don't false-trigger; real contention
+    // persists for a full SCK half-period (>=10 ns)
+    always @(sd_oe or host_oe) begin
+        #1;
         if (sd_oe != 0 && host_oe != 0) err("SD contention: both sides driving");
     end
 

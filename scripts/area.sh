@@ -12,7 +12,7 @@ src/serv/serv_rf_ram_if.v src/serv/serv_rf_ram.v src/serv/serv_state.v \
 src/serv/serv_debug.v src/serv/serv_aligner.v src/serv/serv_compdec.v \
 src/serv/serv_top.v"
 
-SOURCES="$SERV_SRCS src/qspi_ctrl.v src/rf_adapter.v src/gpio.v src/tt_um_rhgndf_rv32i_soc.v"
+SOURCES="$SERV_SRCS src/qspi_rf.v src/gpio.v src/tt_um_rhgndf_rv32i_soc.v"
 
 # Per-module area: synthesize each block alone.
 per_module() {
@@ -24,8 +24,7 @@ per_module() {
 
 echo "== Per-module cell area (sky130_fd_sc_hd) =="
 printf "%-28s %s\n" "serv_top"     "$(per_module serv_top $SERV_SRCS)"
-printf "%-28s %s\n" "qspi_ctrl"    "$(per_module qspi_ctrl src/qspi_ctrl.v)"
-printf "%-28s %s\n" "rf_adapter"   "$(per_module rf_adapter src/rf_adapter.v)"
+printf "%-28s %s\n" "qspi_rf"      "$(per_module qspi_rf src/qspi_rf.v)"
 printf "%-28s %s\n" "gpio"         "$(per_module gpio src/gpio.v)"
 
 echo "== Whole SoC =="

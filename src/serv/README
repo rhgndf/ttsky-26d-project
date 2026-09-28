@@ -4,5 +4,6 @@ Tag      : 1.4.0
 Commit   : 7d9cde4e6ca4f4c84d7512a752a4c187537dd373
 License  : ISC (see LICENSE in this directory)
 
-These files are vendored verbatim by scripts/vendor_serv.sh; do not edit.
+These files are vendored verbatim by scripts/vendor_serv.sh (FuseSoC export
+of award-winning:serv:serv:1.4.0); do not edit.
 SERV is instantiated UNMODIFIED (serv_top) inside tt_um_rhgndf_rv32i_soc.

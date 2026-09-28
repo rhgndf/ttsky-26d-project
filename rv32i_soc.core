@@ -22,8 +22,7 @@ filesets:
       - src/serv/serv_aligner.v
       - src/serv/serv_compdec.v
       - src/serv/serv_top.v
-      - src/qspi_ctrl.v
-      - src/rf_adapter.v
+      - src/qspi_rf.v
       - src/gpio.v
       - src/tt_um_rhgndf_rv32i_soc.v
     file_type : verilogSource

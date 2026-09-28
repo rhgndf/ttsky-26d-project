@@ -28,8 +28,7 @@ project:
     - "serv/serv_aligner.v"
     - "serv/serv_compdec.v"
     - "serv/serv_top.v"
-    - "qspi_ctrl.v"
-    - "rf_adapter.v"
+    - "qspi_rf.v"
     - "gpio.v"
     - "tt_um_rhgndf_rv32i_soc.v"
 

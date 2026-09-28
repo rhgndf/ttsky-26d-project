@@ -57,7 +57,9 @@ module flash_model #(
         end
     endfunction
 
-    always @(*) begin
+    // see psram_model: 1 ns settle so zero-time decode transients don't count
+    always @(sd_oe or host_oe) begin
+        #1;
         if (sd_oe != 0 && host_oe != 0) err("SD contention: both sides driving");
     end
 

@@ -12,7 +12,7 @@ SERV_SOURCES = serv/serv_bufreg.v serv/serv_bufreg2.v serv/serv_alu.v \
   serv/serv_mem_if.v serv/serv_rf_if.v serv/serv_rf_ram_if.v \
   serv/serv_rf_ram.v serv/serv_state.v serv/serv_debug.v \
   serv/serv_aligner.v serv/serv_compdec.v serv/serv_top.v
-PROJECT_SOURCES = $(SERV_SOURCES) qspi_ctrl.v rf_adapter.v gpio.v \
+PROJECT_SOURCES = $(SERV_SOURCES) qspi_rf.v gpio.v \
   tt_um_rhgndf_rv32i_soc.v
 
 # Firmware image loaded into the flash model; HEX paths relative to test/
