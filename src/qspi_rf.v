@@ -90,6 +90,7 @@ module qspi_rf #(
     reg  [1:0]  fstg;       // F_WREN / F_CMD / F_POLL
     reg         fdat;       // CMD stage: address done, now quad data
     reg         fbusy;      // sampled BUSY bit from the last POLL
+    reg         fseed;      // poll LFSR has left its zero init state
     reg         fop;        // a flash op is in progress (across CS gaps)
     reg         wen;        // STATUS bit1, write-enable
     reg         timeout;    // STATUS bit0, sticky
@@ -143,6 +144,14 @@ module qspi_rf #(
     wire f_data = fop_st && fdat;
     wire [7:0] fcmd = (fstg == F_WREN) ? 8'h06 :
                       (fstg == F_CMD)  ? (i_fop_erase ? 8'h20 : 8'h32) : 8'h05;
+    // maximal-length XNOR LFSR in b2[31 -: POLL_BITS] (lower bits frozen):
+    // the zero init state returns after exactly 2^POLL_BITS polls, so
+    // lfsr_done (= returned to zero) gives the 2^POLL_BITS bound exactly.
+    // Taps (field bit 0 = oldest): 20-bit {0,17}, 4-bit {3,0} — both
+    // maximal for the right-shift XNOR form.
+    wire lfsr_fb = (POLL_BITS == 20) ? ~(b2[12] ^ b2[29])
+                                   : ~(b2[31] ^ b2[28]);
+    wire lfsr_done = fseed && (b2[31 -: POLL_BITS] == {POLL_BITS{1'b0}});
     wire [23:0] fadr  = {i_dbus_adr[23:2], wofs};
     wire        fabit = fadr[5'd31 - step];
 
@@ -196,7 +205,7 @@ module qspi_rf #(
 
     // a POLL completes the op: BUSY clear -> done; pcnt full -> TIMEOUT
     assign o_fop_ack = fop_st && (fstg == F_POLL) && sck && (step == 5'd15)
-                       && (!fbusy || (&b2[POLL_BITS-1:0]));
+                       && (!fbusy || lfsr_done);
 
     assign o_wen     = wen;
     assign o_timeout = timeout;
@@ -223,6 +232,7 @@ module qspi_rf #(
             fstg   <= F_WREN;
             fdat   <= 1'b0;
             fbusy  <= 1'b0;
+            fseed  <= 1'b0;
             fop    <= 1'b0;
             wen    <= 1'b0;
             timeout<= 1'b0;
@@ -252,8 +262,11 @@ module qspi_rf #(
             else if (rshift)
                 b2 <= {b2[0], b2[31:1]};
             else if ((state == S_FOP) && (fstg == F_POLL) && sck &&
-                     (step == 5'd15) && fbusy)
-                b2 <= b2 + 32'd1;                   // poll count
+                     (step == 5'd15) && fbusy) begin
+                b2 <= {lfsr_fb, b2[31 -: POLL_BITS-1],
+                       b2[31-POLL_BITS:0]};         // poll count (LFSR)
+                fseed <= |b2[31 -: POLL_BITS] | lfsr_fb;
+            end
 
 
             if (i_wen0)
@@ -287,6 +300,7 @@ module qspi_rf #(
                     fstg    <= F_WREN;
                     fdat    <= 1'b0;
                     fbusy   <= 1'b0;
+                    fseed   <= 1'b0;
                     fop     <= 1'b1;
                     timeout <= 1'b0;
                 end else if (i_dbus_req) begin
@@ -378,7 +392,7 @@ module qspi_rf #(
                             state <= S_IDLE;
                             if (!fbusy)
                                 fop <= 1'b0;          // done -> ack
-                            else if (&b2[POLL_BITS-1:0]) begin
+                            else if (lfsr_done) begin
                                 fop     <= 1'b0;
                                 timeout <= 1'b1;      // done -> ack + TIMEOUT
                             end else
