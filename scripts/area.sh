@@ -17,15 +17,19 @@ SOURCES="$SERV_SRCS src/qspi_rf.v src/gpio.v src/tt_um_rhgndf_rv32i_soc.v"
 # Per-module area: synthesize each block alone.
 per_module() {
     local top=$1; shift
+    local chparam=$1; shift
     local files="$@"
-    yosys -p "read_verilog $files; synth -top $top; dfflibmap -liberty $LIB; abc -liberty $LIB; stat -liberty $LIB" 2>/dev/null \
+    yosys -p "read_verilog $files; $chparam; synth -top $top; dfflibmap -liberty $LIB; abc -liberty $LIB; stat -liberty $LIB" 2>/dev/null \
         | awk '/Chip area for/ {print $NF}' | tail -1
 }
 
+# Parameters matching the serv_top instantiation in tt_um_rhgndf_rv32i_soc.v.
+SERV_PARAMS="chparam -set WITH_CSR 0 -set PRE_REGISTER 1 -set MDU 0 -set COMPRESSED 0 -set ALIGN 0 -set W 1 serv_top"
+
 echo "== Per-module cell area (sky130_fd_sc_hd) =="
-printf "%-28s %s\n" "serv_top"     "$(per_module serv_top $SERV_SRCS)"
-printf "%-28s %s\n" "qspi_rf"      "$(per_module qspi_rf src/qspi_rf.v)"
-printf "%-28s %s\n" "gpio"         "$(per_module gpio src/gpio.v)"
+printf "%-28s %s\n" "serv_top"     "$(per_module serv_top "$SERV_PARAMS" $SERV_SRCS)"
+printf "%-28s %s\n" "qspi_rf"      "$(per_module qspi_rf "" src/qspi_rf.v)"
+printf "%-28s %s\n" "gpio"         "$(per_module gpio "" src/gpio.v)"
 
 echo "== Whole SoC =="
 yosys -p "read_verilog $SOURCES; synth -top tt_um_rhgndf_rv32i_soc -flatten; dfflibmap -liberty $LIB; abc -liberty $LIB; stat -liberty $LIB" 2>/dev/null \
