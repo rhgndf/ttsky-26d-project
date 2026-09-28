@@ -21,9 +21,9 @@
 #define UART_STATUS      REG32(UART_BASE + 0x04)  /* [0] busy */
 #define UART_DIV         REG32(UART_BASE + 0x08)  /* [11:0], reset 434 */
 
-/* TIMER (24-bit) */
-#define TIMER_COUNT      REG32(TIMER_BASE + 0x00)
-#define TIMER_CMP        REG32(TIMER_BASE + 0x04)
+/* TIMER (16-bit) */
+#define TIMER_COUNT      REG32(TIMER_BASE + 0x00) /* [15:0] */
+#define TIMER_CMP        REG32(TIMER_BASE + 0x04) /* [15:0] */
 #define TIMER_CTRL       REG32(TIMER_BASE + 0x08) /* [0] irq_en, [1] flag (w1c) */
 
 /* SPI (mode 0, MSB first) */

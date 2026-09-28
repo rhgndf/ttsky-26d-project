@@ -2,7 +2,7 @@
 // UART TX only, 8N1. Register block (addr[3:2]):
 //   0x00 DATA: write = start TX of [7:0] (ignored if busy)
 //   0x04 STATUS ro: [0] tx_busy
-//   0x08 DIV rw [11:0]: clocks per bit, reset 434
+//   0x08 DIV rw [7:0]: clocks per bit, reset 216
 module uart (
     input  wire        clk,
     input  wire        rst_n,
@@ -14,29 +14,29 @@ module uart (
     output wire        tx
 );
 
-    reg [11:0] div;
+    reg [7:0]  div;
     reg        tx_busy;
     reg [9:0]  tx_shift;    // {stop, data[7:0], start}
     reg [3:0]  tx_bitcnt;
-    reg [11:0] tx_clkcnt;
+    reg [7:0]  tx_clkcnt;
     reg        tx_out;
     assign tx = tx_out;
-    wire _unused = &{1'b0, wdata[31:12], tx_shift[0], 1'b0};
+    wire _unused = &{1'b0, wdata[31:8], tx_shift[0], 1'b0};
 
     always @(*) begin
         case (regsel)
         2'd1:    rdata = {31'b0, tx_busy};
-        2'd2:    rdata = {20'b0, div};
+        2'd2:    rdata = {24'b0, div};
         default: rdata = 32'b0;
         endcase
     end
 
     always @(posedge clk) begin
         if (!rst_n) begin
-            div      <= 12'd434;
+            div      <= 8'd216;
             tx_busy  <= 1'b0;
             tx_out   <= 1'b1;
-            tx_shift <= 10'b0; tx_bitcnt <= 4'b0; tx_clkcnt <= 12'b0;
+            tx_shift <= 10'b0; tx_bitcnt <= 4'b0; tx_clkcnt <= 8'b0;
         end else begin
             // register writes
             if (req && wr) begin
@@ -48,7 +48,7 @@ module uart (
                     tx_busy   <= 1'b1;
                     tx_out    <= 1'b0; // start bit
                 end
-                2'd2: div <= wdata[11:0];
+                2'd2: div <= wdata[7:0];
                 default: ;
                 endcase
             end

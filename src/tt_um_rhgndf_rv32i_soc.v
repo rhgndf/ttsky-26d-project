@@ -112,7 +112,11 @@ module tt_um_rhgndf_rv32i_soc (
                                (pblk == 4'h4) ? i2c_rdata   :
                                                 gpio_rdata; // 0 and unmapped
     assign mem_ready = periph ? mem_valid : psram_ready;
-    assign mem_rdata = periph ? periph_rdata : psram_rdata;
+    // rdata source must follow the served transaction, not the live address:
+    // the core streams rdata nibbles after mem_addr has moved on.
+    reg rd_periph;
+    always @(posedge clk) if (mem_valid) rd_periph <= periph;
+    assign mem_rdata = rd_periph ? periph_rdata : psram_rdata;
 
     // ---------------- core (external interrupt: none wired)
     rv32i_core u_core (

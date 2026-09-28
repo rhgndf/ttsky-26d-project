@@ -18,9 +18,9 @@ module rv32i_core (
     input  wire        rst_n,
     output reg         mem_valid,
     input  wire        mem_ready,
-    output reg  [31:0] mem_addr,
-    output reg  [31:0] mem_wdata,
-    output reg  [3:0]  mem_wstrb,
+    output wire [31:0] mem_addr,
+    output wire [31:0] mem_wdata,
+    output wire [3:0]  mem_wstrb,
     input  wire [31:0] mem_rdata,
     input  wire        irq_timer,
     input  wire        irq_ext
@@ -45,7 +45,6 @@ module rv32i_core (
     reg  [1:0] loff;
     reg  [2:0] ncnt;
     reg  [4:0] bcnt;
-    reg  [4:0] shamt;
     reg  [4:0] rd_idx;
     reg  [5:0] state, ret;
 
@@ -95,7 +94,9 @@ module rv32i_core (
                OP_CSR   = 3'd2,
                OP_PC    = 3'd3,
                OP_CONST = 3'd4,   // 4 on nibble 0 else 0
-               OP_ZERO  = 3'd5;
+               OP_ZERO  = 3'd5,
+               OP_LT    = 3'd6,   // {31'b0, lt} for SLT/SLTU
+               OP_ZIMM  = 3'd7;   // zimm = rs1 field
     reg  [2:0]  op_sel;
     wire [31:0] pc_ext = {8'b0, pc};
     wire [3:0]  op_nib = (op_sel == OP_RDATA) ? mem_rdata[ncnt*4 +: 4] :
@@ -103,11 +104,18 @@ module rv32i_core (
                        (op_sel == OP_CSR)   ? csr_val[ncnt*4 +: 4]  :
                        (op_sel == OP_PC)    ? pc_ext[ncnt*4 +: 4]   :
                        (op_sel == OP_CONST) ? (ncnt == 3'd0 ? 4'd4 : 4'd0) :
+                       (op_sel == OP_LT)    ? (ncnt == 3'd0 ? {3'b0, lt_sgn} : 4'b0) :
+                       (op_sel == OP_ZIMM)  ? (ncnt == 3'd0 ? rs1[3:0] :
+                                               ncnt == 3'd1 ? {3'b0, rs1[4]} : 4'b0) :
                                               4'b0;
+    wire lt_sgn = (funct3 == 3'b010) ? lt_f : ltu_f;
 
     // ---------------- 4-bit ALU
     localparam ALU_ADD = 3'd0, ALU_SUB = 3'd1, ALU_AND = 3'd2, ALU_OR = 3'd3,
-               ALU_XOR = 3'd4, ALU_PASS = 3'd5, ALU_ANDN = 3'd6;
+               ALU_XOR = 3'd4, ALU_PASS = 3'd5, ALU_ANDN = 3'd6, ALU_FILL = 3'd7;
+    // load-extension keep count: LB/LBU keep 2 nibbles, LH/LHU keep 4, LW all
+    wire [2:0] ext_keepn = funct3[2] ? (funct3[0] ? 3'd4 : 3'd2)
+                                   : (funct3 == 3'b010 ? 3'd0 : (funct3[0] ? 3'd4 : 3'd2));
     reg [2:0] alu_op;
     reg [4:0] alu_res;
     always @(*) begin
@@ -118,6 +126,8 @@ module rv32i_core (
         ALU_XOR:   alu_res = {1'b0, a[3:0] ^ op_nib};
         ALU_PASS:  alu_res = {1'b0, op_nib};
         ALU_ANDN:  alu_res = {1'b0, ~a[3:0] & op_nib};  // CSRC: old & ~src (a=src)
+        ALU_FILL:  alu_res = {1'b0, (ext_keepn == 0 || ncnt < ext_keepn) ? a[3:0]
+                              : (funct3[2] ? 4'b0 : {4{sgn}})};
         default:   alu_res = {1'b0, a[3:0]} + {1'b0, op_nib} + {4'b0, c};
         endcase
     end
@@ -127,6 +137,15 @@ module rv32i_core (
     // effective bus address from b
     wire [31:0] bus_addr = b_periph ? (32'h2000_0000 | {20'b0, b[11:0]})
                                     : {8'b0, b[23:2], 2'b00};
+
+    // mem bus outputs are combinational on state (saves 68 flops)
+    assign mem_addr  = (state == S_FETCH)                    ? {8'b0, pc} :
+                       (state >= S_RREG && state <= S_WREG_W) ? {8'b0, rf_addr} :
+                                                                bus_addr;
+    assign mem_wstrb = (state == S_WREG || state == S_WREG_W ||
+                        state == S_MEMW || state == S_MEMW_W) ? 4'b1111 : 4'b0000;
+    assign mem_wdata = (state >= S_MEMW && state <= S_MEMW_W &&
+                        !b_periph && st_strb != 4'b1111) ? merge_wdata : a;
 
     // store byte strobes for sub-word PSRAM RMW
     reg  [3:0]  st_strb;
@@ -138,9 +157,10 @@ module rv32i_core (
 
     wire irq_pend = csr_mie && ((csr_mtie && irq_timer) || (csr_meie && irq_ext));
 
-    // load-extension keep count: LB/LBU keep 2 nibbles, LH/LHU keep 4, LW all
-    wire [2:0] ext_keepn = funct3[2] ? (funct3[0] ? 3'd4 : 3'd2)
-                                   : (funct3 == 3'b010 ? 3'd0 : (funct3[0] ? 3'd4 : 3'd2));
+    // shift count source: I-type from imm field, R-type from rs2 word (0 if rs2==x0)
+    wire [4:0] bcnt_src = (opcode == 7'b0110011)
+                          ? ((rs2 != 0) ? mem_rdata[4:0] : 5'b0)
+                          : ir[24:20];
 
     // ---------------- states
     localparam S_IRQ = 0, S_FETCH = 1, S_DEC = 2,
@@ -183,7 +203,12 @@ module rv32i_core (
         S_MEMR_W  = 41,
         S_MEMW    = 42,  // issue write at b (wdata preset by caller)
         S_MEMW_W  = 43,
-        S_EXT     = 44;  // load sign/zero extension pass
+        M_AU2     = 44,  // AUIPC: a=pc -> pc+imm pass
+        M_JALT2   = 45,  // JAL: a=pc -> pc+imm_j pass
+        M_BRT2    = 46,  // branch taken: a=pc -> pc+imm_b pass
+        M_JALRL0  = 47,  // JALR: a=pc -> pc+4 link pass
+        M_LD0     = 48,  // load: stream rdata into a
+        M_JAL_C   = 49;  // JAL: write link then target
 
     task do_trap(input [3:0] code);
         begin
@@ -197,11 +222,11 @@ module rv32i_core (
         end
     endtask
 
-    // start a compare/branch taken pass: a = pc + imm_b -> M_PCSET
+    // start branch taken sequence: a = pc (pass) -> M_BRT2 adds imm_b
     task br_target;
         begin
-            a <= pc_ext; op_sel <= OP_IMM; alu_op <= ALU_ADD; c <= 1'b0;
-            ret <= M_PCSET; state <= S_PASS;
+            op_sel <= OP_PC; alu_op <= ALU_PASS; c <= 1'b0;
+            ret <= M_BRT2; state <= S_PASS;
         end
     endtask
 
@@ -211,9 +236,9 @@ module rv32i_core (
             csr_mie <= 0; csr_mpie <= 0; csr_mtie <= 0; csr_meie <= 0;
             csr_mepc <= 0; csr_mcause_int <= 0; csr_mcause_code <= 0;
             c <= 0; sgn <= 0; eq_acc <= 1; lt_f <= 0; ltu_f <= 0;
-            keepa <= 0; loff <= 0; ncnt <= 0; bcnt <= 0; shamt <= 0; rd_idx <= 0;
+            keepa <= 0; loff <= 0; ncnt <= 0; bcnt <= 0; rd_idx <= 0;
             st_strb <= 0;
-            mem_valid <= 0; mem_addr <= 0; mem_wdata <= 0; mem_wstrb <= 0;
+            mem_valid <= 0;
             op_sel <= OP_ZERO; alu_op <= ALU_ADD;
             state <= S_IRQ; ret <= S_IRQ;
         end else begin
@@ -228,8 +253,6 @@ module rv32i_core (
                     csr_mcause_code <= (csr_meie && irq_ext) ? 4'd11 : 4'd7;
                     pc              <= 24'd4;
                 end
-                mem_addr  <= {8'b0, irq_pend ? 24'd4 : pc};
-                mem_wstrb <= 4'b0;
                 mem_valid <= 1'b1;
                 state     <= S_FETCH;
             end
@@ -246,12 +269,12 @@ module rv32i_core (
                     op_sel <= OP_IMM; alu_op <= ALU_PASS; rd_idx <= rd;
                     ret <= M_WRD; state <= S_PASS;
                 end
-                7'b0010111: begin // AUIPC: a = pc + imm_u
-                    a <= pc_ext; op_sel <= OP_IMM; alu_op <= ALU_ADD; c <= 1'b0;
-                    rd_idx <= rd; ret <= M_WRD; state <= S_PASS;
+                7'b0010111: begin // AUIPC: a = pc (pass) then + imm_u
+                    op_sel <= OP_PC; alu_op <= ALU_PASS; c <= 1'b0;
+                    rd_idx <= rd; ret <= M_AU2; state <= S_PASS;
                 end
                 7'b1101111: begin // JAL: link = pc+4, then pc += imm_j
-                    a <= pc_ext; op_sel <= OP_CONST; alu_op <= ALU_ADD; c <= 1'b0;
+                    op_sel <= OP_PC; alu_op <= ALU_PASS; c <= 1'b0;
                     rd_idx <= rd; ret <= M_JAL_L; state <= S_PASS;
                 end
                 7'b1100111, 7'b1100011, 7'b0000011, 7'b0100011,
@@ -260,7 +283,8 @@ module rv32i_core (
                         keepa <= 1'b0;
                         rd_idx <= rs1; ret <= M_OP1; state <= S_RREG;
                     end else begin
-                        a <= 32'b0; state <= M_OP1;
+                        op_sel <= OP_ZERO; alu_op <= ALU_PASS; c <= 1'b0;
+                        ret <= M_OP1; state <= S_PASS;
                     end
                 end
                 7'b0001111: begin pc <= pc + 4; state <= S_IRQ; end // FENCE
@@ -283,13 +307,22 @@ module rv32i_core (
             end
 
             // ---- JAL / JALR ----
-            M_JAL_L: begin // a = pc+4 (link); write rd then compute target
+            M_JAL_L: begin // a = pc; +4 pass makes the link value
+                op_sel <= OP_CONST; alu_op <= ALU_ADD; c <= 1'b0;
+                ret <= M_JAL_C; state <= S_PASS;
+            end
+            M_JAL_C: begin // a = pc+4 (link); write rd, then target
                 if (rd_idx != 0) begin ret <= M_JAL_T; state <= S_WREG; end
                 else             state <= M_JAL_T;
             end
-            M_JAL_T: begin // a = pc + imm_j -> pc
-                a <= pc_ext; op_sel <= OP_IMM; alu_op <= ALU_ADD; c <= 1'b0;
-                ret <= M_PCSET; state <= S_PASS;
+            M_JAL_T: begin // a = pc+imm_j -> pc: first stream pc, then +imm
+                op_sel <= OP_PC; alu_op <= ALU_PASS; c <= 1'b0;
+                ret <= M_JALT2; state <= S_PASS;
+            end
+            M_AU2, M_JALT2, M_BRT2: begin // a=pc streamed; add imm, then ret
+                op_sel <= OP_IMM; alu_op <= ALU_ADD; c <= 1'b0;
+                ret <= (state == M_AU2) ? M_WRD : M_PCSET;
+                state <= S_PASS;
             end
             M_PCSET: begin
                 pc    <= {a[23:2], 2'b00};
@@ -297,8 +330,12 @@ module rv32i_core (
             end
             M_JALR_B: begin // a = rs1+imm_i (target); latch, then link pass
                 b  <= {a[23:1], 1'b0};
-                a  <= pc_ext; op_sel <= OP_CONST; alu_op <= ALU_ADD; c <= 1'b0;
-                rd_idx <= rd; ret <= M_JALR_L; state <= S_PASS;
+                op_sel <= OP_PC; alu_op <= ALU_PASS; c <= 1'b0;
+                rd_idx <= rd; ret <= M_JALRL0; state <= S_PASS;
+            end
+            M_JALRL0: begin // a = pc+4 (link) via CONST pass
+                op_sel <= OP_CONST; alu_op <= ALU_ADD; c <= 1'b0;
+                ret <= M_JALR_L; state <= S_PASS;
             end
             M_JALR_L: begin // a = pc+4; write rd if needed
                 if (rd_idx != 0) begin ret <= M_JALR_PC; state <= S_WREG; end
@@ -331,7 +368,7 @@ module rv32i_core (
                 b_periph <= (a[29:28] == 2'b10);
                 loff     <= a[1:0];
                 if (opcode == 7'b0000011) begin
-                    ret <= M_LD1; state <= S_MEMR;
+                    ret <= M_LD0; state <= S_MEMR;
                 end else begin
                     st_strb <= (funct3 == 3'b000) ? (4'b0001 << a[1:0]) :
                                (funct3 == 3'b001) ? (4'b0011 << {a[1], 1'b0}) :
@@ -340,21 +377,25 @@ module rv32i_core (
                         keepa <= 1'b0;   // a <= rs2 (store data)
                         rd_idx <= rs2; ret <= M_ST2; state <= S_RREG;
                     end else begin
-                        a <= 32'b0; state <= M_ST2;
+                        op_sel <= OP_ZERO; alu_op <= ALU_PASS; c <= 1'b0;
+                        ret <= M_ST2; state <= S_PASS;
                     end
                 end
             end
             // ---- load ----
-            M_LD1: begin
-                a    <= mem_rdata;
+            M_LD0: begin // stream rdata into a
+                op_sel <= OP_RDATA; alu_op <= ALU_PASS; c <= 1'b0;
+                ret <= M_LD1; state <= S_PASS;
+            end
+            M_LD1: begin // a = rdata; rotate right by loff bytes
                 bcnt <= {2'b0, loff, 1'b0};
                 if (loff != 0) begin ret <= M_LD2; state <= S_ROTR; end
                 else           state <= M_LD2;
             end
             M_LD2: begin
-                sgn  <= (funct3 == 3'b000) ? a[7] : a[15];
-                ncnt <= 3'b0;
-                state <= S_EXT;
+                sgn    <= (funct3 == 3'b000) ? a[7] : a[15];
+                alu_op <= ALU_FILL;
+                ret    <= M_LDEXT; state <= S_PASS;
             end
             M_LDEXT: begin
                 rd_idx <= rd; state <= M_WRD;
@@ -366,15 +407,13 @@ module rv32i_core (
                 else           state <= M_ST3;
             end
             M_ST3: begin
-                mem_wdata <= a;
                 if (b_periph || st_strb == 4'b1111) begin
                     ret <= S_PC4; state <= S_MEMW;
                 end else begin
                     ret <= M_ST4; state <= S_MEMR;   // RMW: read old word first
                 end
             end
-            M_ST4: begin // rdata = old word; write merged
-                mem_wdata <= merge_wdata;
+            M_ST4: begin // rdata = old word; merged write via combinational wdata
                 ret <= S_PC4; state <= S_MEMW;
             end
             // ---- OP / OP-IMM dispatch (a = rs1) ----
@@ -403,7 +442,6 @@ module rv32i_core (
                 7'b0010011: begin // OP-IMM
                     rd_idx <= rd;
                     if (funct3 == 3'b001 || funct3 == 3'b101) begin // shifts
-                        shamt <= ir[24:20];
                         state <= M_SH0;
                     end else begin
                         op_sel <= OP_IMM;
@@ -432,7 +470,6 @@ module rv32i_core (
                 eq_acc <= 1'b1;
                 if (opcode == 7'b0110011 &&
                     (funct3 == 3'b001 || funct3 == 3'b101)) begin // SLL/SRL/SRA
-                    shamt <= (rs2 != 0) ? mem_rdata[4:0] : 5'b0;
                     state <= M_SH0;
                 end else if (opcode == 7'b1100011) begin
                     op_sel <= (rs2 != 0) ? OP_RDATA : OP_ZERO;
@@ -453,9 +490,10 @@ module rv32i_core (
             end
             M_OPRES: begin // SLT/SLTU fixup: a = {31'b0, lt}
                 if ((opcode == 7'b0010011 || opcode == 7'b0110011) &&
-                    (funct3 == 3'b010 || funct3 == 3'b011))
-                    a <= {31'b0, (funct3 == 3'b010) ? lt_f : ltu_f};
-                state <= M_WRD;
+                    (funct3 == 3'b010 || funct3 == 3'b011)) begin
+                    op_sel <= OP_LT; alu_op <= ALU_PASS; c <= 1'b0;
+                    ret <= M_WRD; state <= S_PASS;
+                end else state <= M_WRD;
             end
             M_WRD: begin // write rd (rd_idx==rd) unless x0, then pc+4
                 if (rd_idx != 0) begin ret <= S_PC4; state <= S_WREG; end
@@ -464,8 +502,8 @@ module rv32i_core (
             S_PC4: begin pc <= pc + 4; state <= S_IRQ; end
             // ---- shift loop init ----
             M_SH0: begin
-                bcnt <= shamt;
-                if (shamt == 0) begin
+                bcnt <= bcnt_src;
+                if (bcnt_src == 0) begin
                     state <= M_WRD; // rd_idx already set
                 end else begin
                     sgn <= a[31] & ir[30] & funct3[2]; // SRA fill (funct3=101, ir30)
@@ -481,14 +519,14 @@ module rv32i_core (
             M_CSR2: begin // a <= src = zimm or rs1
                 ncnt <= 3'b0;
                 if (funct3[2]) begin
-                    a <= {27'b0, rs1};
-                    state <= M_CSR3;
+                    op_sel <= OP_ZIMM; alu_op <= ALU_PASS; c <= 1'b0;
+                    ret <= M_CSR3; state <= S_PASS;
                 end else if (rs1 != 0) begin
                     keepa <= 1'b0;   // a <= rs1 (old csr already written to rd)
                     rd_idx <= rs1; ret <= M_CSR3; state <= S_RREG;
                 end else begin
-                    a <= 32'b0;
-                    state <= M_CSR3;
+                    op_sel <= OP_ZERO; alu_op <= ALU_PASS; c <= 1'b0;
+                    ret <= M_CSR3; state <= S_PASS;
                 end
             end
             M_CSR3: begin
@@ -517,20 +555,17 @@ module rv32i_core (
 
             // ================= leaf subroutines =================
             S_RREG: begin
-                mem_addr  <= {8'b0, rf_addr};
-                mem_wstrb <= 4'b0;
                 mem_valid <= 1'b1;
                 state     <= S_RREG_W;
             end
             S_RREG_W: if (mem_ready) begin
                 mem_valid <= 1'b0;
-                if (!keepa) a <= mem_rdata;
-                state <= ret;
+                if (!keepa) begin
+                    op_sel <= OP_RDATA; alu_op <= ALU_PASS; c <= 1'b0;
+                    state <= S_PASS;   // stream rdata into a, then ret
+                end else state <= ret;
             end
             S_WREG: begin
-                mem_addr  <= {8'b0, rf_addr};
-                mem_wdata <= a;
-                mem_wstrb <= 4'b1111;
                 mem_valid <= 1'b1;
                 state     <= S_WREG_W;
             end
@@ -549,12 +584,6 @@ module rv32i_core (
                     state <= ret;
                 end else ncnt <= ncnt + 3'd1;
             end
-            S_EXT: begin // extension pass (lw: keepn=0 keeps all nibbles)
-                a <= { (ext_keepn == 0 || ncnt < ext_keepn) ? a[3:0]
-                       : (funct3[2] ? 4'b0 : {4{sgn}}), a[31:4] };
-                if (ncnt == 3'd7) begin ncnt <= 3'b0; state <= M_LDEXT; end
-                else ncnt <= ncnt + 3'd1;
-            end
             S_ROTR: begin a <= {a[3:0], a[31:4]};   if (bcnt == 1) state <= ret; else bcnt <= bcnt - 1; end
             S_ROTL: begin a <= {a[27:0], a[31:28]}; if (bcnt == 1) state <= ret; else bcnt <= bcnt - 1; end
             S_SHF: begin
@@ -565,8 +594,6 @@ module rv32i_core (
                 end else bcnt <= bcnt - 5'd1;
             end
             S_MEMR: begin // issue read at b
-                mem_addr  <= bus_addr;
-                mem_wstrb <= 4'b0;
                 mem_valid <= 1'b1;
                 state     <= S_MEMR_W;
             end
@@ -574,9 +601,7 @@ module rv32i_core (
                 mem_valid <= 1'b0;
                 state     <= ret;
             end
-            S_MEMW: begin // issue write at b (mem_wdata preset by caller)
-                mem_addr  <= bus_addr;
-                mem_wstrb <= 4'b1111;
+            S_MEMW: begin // issue write at b (mem_wdata is combinational)
                 mem_valid <= 1'b1;
                 state     <= S_MEMW_W;
             end
