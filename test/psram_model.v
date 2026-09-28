@@ -34,8 +34,6 @@ module psram_model #(
         if ($value$plusargs("RAMHEX=%s", ramhex)) $readmemh(ramhex, mem);
     end
 
-    wire [23:0] maddr = addr & (SIZE - 1);
-
     localparam S_CMD = 0, S_ADDR = 1, S_DUMMY = 2, S_RD = 3,
                S_WR = 4, S_IDLE = 5;
     integer state;
@@ -44,6 +42,7 @@ module psram_model #(
     integer wnib;            // write nibbles received
     reg [7:0]  cmd;
     reg [23:0] addr;
+    wire [23:0] maddr = addr & (SIZE - 1);
     reg [7:0]  wbyte;
     reg [31:0] tohost_acc;
 

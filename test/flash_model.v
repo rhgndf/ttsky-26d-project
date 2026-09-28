@@ -31,8 +31,6 @@ module flash_model #(
         if ($value$plusargs("HEX=%s", hexfile)) $readmemh(hexfile, mem);
     end
 
-    wire [23:0] maddr = addr & (SIZE - 1);
-
     localparam S_CMD = 0, S_ADDR = 1, S_MODE = 2, S_DUMMY = 3,
                S_RD = 4, S_IDLE = 5;
     integer state;
@@ -40,6 +38,7 @@ module flash_model #(
     integer outcnt;
     reg [7:0]  cmd;
     reg [23:0] addr;
+    wire [23:0] maddr = addr & (SIZE - 1);
     reg [7:0]  mode;          // mode bits from first 2 wait clocks
 
     task err(input [255:0] msg);
