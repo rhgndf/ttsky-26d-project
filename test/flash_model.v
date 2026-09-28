@@ -28,6 +28,8 @@ module flash_model #(
     integer ki;
     integer stuck_busy;
     integer op_count;         // accepted 0x20/0x32 ops (dup-op check)
+    reg        wel, busy;
+    integer    busy_n;
     initial begin
         error  = 1'b0;
         sd_drv = 4'b0;
@@ -52,8 +54,6 @@ module flash_model #(
     reg [7:0]  mode;          // mode bits from first 2 wait clocks
     reg [31:0] wdat;          // program data nibble accumulator
     integer    wnib;          // nibbles received so far
-    reg        wel, busy;
-    integer    busy_n;
     integer    i, b;
 
     task err(input [255:0] msg);
