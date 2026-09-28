@@ -177,11 +177,12 @@ module qspi_rf (
                 rf_ph <= 1'b0;
             end
 
-            // data registers
-            if (rd_samp && (state == S_RD0))
+            // data registers: b1 shifts right by 4 for RD0 read captures and
+            // for FLUSH write nibbles (b1 is dead after a flush, so reusing
+            // the pad-capture shift for it saves a mux level)
+            if ((rd_samp && (state == S_RD0)) ||
+                (state == S_FLUSH && wr_data && sck))
                 b1 <= {sdin_m, b1[31:4]};
-            else if (state == S_FLUSH && wr_data && sck)
-                b1 <= {b1[3:0], b1[31:4]};   // rotate out written nibble
             else if (rshift)
                 b1 <= {i_wen0 ? i_wdata0 : b1[0], b1[31:1]};
 
