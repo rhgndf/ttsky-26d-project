@@ -205,7 +205,7 @@ module tt_um_rhgndf_rv32i_soc #(
                                : eng_rdt;
 
     // ---------------------------------------------------------------
-    // pads: uio[0]=CS0 [1]=SD0 [2]=SD1 [3]=SCK [4]=SD2 [5]=SD3 [6]=CS1 [7]=CS2
+    // pads: uio[0]=CS0 [1]=SD0 [2]=SD1 [3]=SCK [4]=SD2 [5]=SD3 [6]=CS1 [7]=GPIO
     // ---------------------------------------------------------------
     assign uio_out = {io_out, cs1_n, sd_out[3], sd_out[2],
                       sck, sd_out[1], sd_out[0], cs0_n};

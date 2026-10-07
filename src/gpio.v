@@ -1,5 +1,5 @@
 `default_nettype none
-// GPIO peripheral: any address with adr[31]=1 maps here.
+// GPIO peripheral: GPIO at 0x8000_0000, GPIO_IO at 0x8000_0004.
 // Read path lives in the top (returns ui_in / uio_in[7] / timer).
 // Write -> gpio_out[7:0] = wdata[7:0] (uo_out)
 // Write io -> io_out = wdata_io[0], io_oe = wdata_io[1] (uio[7] bidir)
