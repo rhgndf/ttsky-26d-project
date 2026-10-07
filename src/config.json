@@ -39,6 +39,8 @@
   "//": "Allow _1 variants of plain combinational cells and dfxtp_1/dfrtp_1",
   "//": "in synthesis so the tighter 1x1 die gets the smaller cells.",
   "SYNTH_EXCLUDED_CELL_FILE": "dir::no_synth_area.cells",
+  "//": "AREA 1 maps ~145 um2 smaller than AREA 0 (12.63k vs 12.77k).",
+  "SYNTH_STRATEGY": "AREA 1",
   "//": "Zero resizer hold margins: CLOCK_UNCERTAINTY 0.25ns already covers",
   "//": "hold; the 0.1 margin forced 300+ unneeded hold buffers (+24% area).",
   "PL_RESIZER_HOLD_SLACK_MARGIN": 0.0,

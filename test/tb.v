@@ -3,8 +3,8 @@
 
 /* Testbench: tt_um_rhgndf_rv32i_soc (SERV) + shared QSPI bus:
    uio[0]=CS0 flash (W25Q128 model, +HEX firmware), uio[6]=CS1 PSRAM (128KB),
-   uio[1,2,4,5]=SD0-3, uio[3]=SCK, uio[7]=CS2 (must stay high).
-   Asserts: CS0 & CS1 never low together; CS2 always high.
+   uio[1,2,4,5]=SD0-3, uio[3]=SCK, uio[7]=bidir GPIO (ext pull-up).
+   Asserts: CS0 & CS1 never low together.
    Exposes tohost_flag/tohost_val and model errors to cocotb. */
 module tb ();
 
@@ -72,7 +72,7 @@ module tb ();
   assign uio_in[0] = cs0;
   assign uio_in[3] = sck;
   assign uio_in[6] = cs1;
-  assign uio_in[7] = uio_out[7];  // CS2 loop back
+  assign uio_in[7] = uio_oe[7] ? uio_out[7] : 1'b1;  // ext pull-up
 
   wire flash_error, psram_error;
   wire tohost_flag;
@@ -104,8 +104,6 @@ module tb ();
   always @(posedge clk) begin
     if (rst_n && !cs0 && !cs1)
       $display("BUS_ERROR: CS0 and CS1 both low (t=%0t)", $time);
-    if (rst_n && !uio_out[7])
-      $display("BUS_ERROR: CS2 low (t=%0t)", $time);
   end
 
   // contention: both models driving at once

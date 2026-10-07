@@ -61,7 +61,7 @@ pinout:
   uio[4]: "QSPI SD2 (bidir)"
   uio[5]: "QSPI SD3 (bidir)"
   uio[6]: "QSPI CS1 PSRAM (out)"
-  uio[7]: "QSPI CS2 (out, always high)"
+  uio[7]: "GPIO IO (bidir; QSPI Pmod CS2 — leave input/high if RAM B fitted)"
 
 # Do not change!
 yaml_version: 6

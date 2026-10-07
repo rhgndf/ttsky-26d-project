@@ -2,13 +2,13 @@
 // tt_um_rhgndf_rv32i_soc — RV32I SoC for Tiny Tapeout 1x1
 // SERV 1.4.0 (unmodified) + QSPI flash/PSRAM controller + RF-in-PSRAM adapter
 // + GPIO.  Memory map (docs/architecture.md):
-//   adr[31]=1, [29:28]=0 -> peripherals (GPIO / FLASH_STATUS)
+//   adr[31]=1, [29:28]=0 -> peripherals (GPIO / GPIO_IO / TIMER / FLASH_STATUS)
 //   adr[31]=1, [28]=1    -> FLASH_PROG window, a[23:0] = op address
 //   adr[31]=1, [29]=1    -> FLASH_ERASE window, a[23:0] = sector
 //   adr[31]=0, [24]=0 -> flash CS0, adr[23:0], read-only (writes acked+ignored)
 //   adr[31]=0, [24]=1 -> PSRAM CS1, base 0x0100_0000
 // QSPI Pmod: uio[0]=CS0, [1]=SD0, [2]=SD1, [3]=SCK, [4]=SD2, [5]=SD3,
-//            [6]=CS1, [7]=CS2 (unused, driven high).
+//            [6]=CS1, [7]=bidir GPIO (input after reset).
 module tt_um_rhgndf_rv32i_soc #(
     parameter POLL_BITS = 20
 ) (
@@ -148,15 +148,33 @@ module tt_um_rhgndf_rv32i_soc #(
     // ---------------------------------------------------------------
     // GPIO peripheral
     // ---------------------------------------------------------------
-    wire       gpio_we = d_periph && !dbus_adr[5] && dbus_cyc && dbus_we;
+    wire       gpio_we = d_periph && !dbus_adr[5] && dbus_cyc && dbus_we &&
+                         (dbus_adr[3:2] == 2'd0);
+    wire       gpio_io_we = d_periph && !dbus_adr[5] && dbus_cyc && dbus_we &&
+                            (dbus_adr[3:2] == 2'd1);
     wire [7:0] gpio_out;
+    wire       io_out, io_oe;
     gpio gpio_i (
         .clk      (clk),
         .rst_n    (rst_n),
         .we       (gpio_we),
         .wdata    (dbus_dat[7:0]),
-        .gpio_out (gpio_out)
+        .gpio_out (gpio_out),
+        .we_io    (gpio_io_we),
+        .wdata_io (dbus_dat[1:0]),
+        .io_out   (io_out),
+        .io_oe    (io_oe)
     );
+
+    // -------------------------------------------------------------
+    // 16-bit free-running timer (read-only, wraps). No reset: the
+    // counter need not start at a known value in silicon.
+    // -------------------------------------------------------------
+    reg [15:0] timer;
+`ifndef __pnr__
+    initial timer = 16'd0;
+`endif
+    always @(posedge clk) timer <= timer + 16'd1;
 
     // ---------------------------------------------------------------
     // bus returns
@@ -181,20 +199,22 @@ module tt_um_rhgndf_rv32i_soc #(
     // flash status read: {wen,timeout}; other periph-block regs read 0
     wire [31:0] frdt = (dbus_adr[3:2] == 2'd3) ? {30'b0, eng_wen, eng_timeout}
                                              : 32'b0;
-    assign dbus_rdt = d_periph ? (dbus_adr[5] ? frdt : {24'b0, ui_in})
+    assign dbus_rdt = d_periph ? (dbus_adr[5] ? frdt :
+                                  dbus_adr[3] ? {16'b0, timer}
+                                              : {23'b0, uio_in[7], ui_in})
                                : eng_rdt;
 
     // ---------------------------------------------------------------
     // pads: uio[0]=CS0 [1]=SD0 [2]=SD1 [3]=SCK [4]=SD2 [5]=SD3 [6]=CS1 [7]=CS2
     // ---------------------------------------------------------------
-    assign uio_out = {1'b1, cs1_n, sd_out[3], sd_out[2],
+    assign uio_out = {io_out, cs1_n, sd_out[3], sd_out[2],
                       sck, sd_out[1], sd_out[0], cs0_n};
-    assign uio_oe  = {1'b1, 1'b1, sd_oe[3], sd_oe[2],
+    assign uio_oe  = {io_oe, 1'b1, sd_oe[3], sd_oe[2],
                       1'b1, sd_oe[1], sd_oe[0], 1'b1};
     assign sd_in   = {uio_in[5], uio_in[4], uio_in[2], uio_in[1]};
     assign uo_out  = gpio_out;
 
-    wire _unused = &{1'b0, ena, uio_in[7:6], uio_in[3], uio_in[0],
+    wire _unused = &{1'b0, ena, uio_in[6], uio_in[3], uio_in[0],
                      dbus_adr[30:25], ibus_adr[30:25], 1'b0};
 
 endmodule

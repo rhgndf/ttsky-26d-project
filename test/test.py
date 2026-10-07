@@ -147,6 +147,12 @@ async def test_flashtimeout(dut):
         f"flashtimeout: op_count={int(dut.flash.op_count.value)}, expected 1"
 
 
+@cocotb.test(skip=GATES or "periphtest" not in HEX)
+async def test_periphtest(dut):
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
+    await run_program(dut, "periphtest", expect_uart=b"periphtest done\n")
+
+
 @cocotb.test(skip=GATES or "rv32ui" not in HEX)
 async def test_riscv(dut):
     cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())

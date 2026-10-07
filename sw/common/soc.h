@@ -12,8 +12,13 @@
 #define FLASH_BASE       0x00000000u   /* W25Q128, read-only */
 #define PERIPH_BASE      0x80000000u   /* adr[31] -> peripherals */
 
-/* GPIO: any peripheral address; read = ui_in, write[7:0] = uo_out */
+/* GPIO 0x00: write[7:0] = uo_out; read[7:0] = ui_in, read[8] = uio[7] pin */
 #define GPIO             REG32(PERIPH_BASE)
+/* GPIO_IO 0x04: write bit0 = uio[7] out value, bit1 = uio[7] output enable;
+ * read = same as GPIO */
+#define GPIO_IO          REG32(0x80000004u)
+/* TIMER 0x08: free-running 16-bit counter, read-only (0x0C reads it too) */
+#define TIMER            REG32(0x80000008u)
 
 /* flash controller: ops are address windows, op addr = a[23:0]
  * FLASH_PROG   0x9000_0000|a  store sb/sh/sw programs 1/2/4 bytes at a
